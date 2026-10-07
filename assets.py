@@ -316,7 +316,7 @@ a{color:var(--acc)}
       r[0].empresas.forEach(function (e) {
         var c = h('div', 'item');
         c.appendChild(h('b', null, e.nome + ' '));
-        var fim = e.estado === 'teste' && e.teste_ate ? ' até ' + new Date(e.teste_ate).toLocaleString('pt-PT') : '';
+        var vd = e.estado === 'ativo' ? e.plano_ate : e.teste_ate, fim = (e.estado === 'teste' || e.estado === 'ativo') && vd ? ' até ' + new Date(vd).toLocaleString('pt-PT') : '';
         c.appendChild(h('span', 'badge' + (e.ativa ? '' : ' off'), e.estado + fim));
         var ped = r[2].pedidos[e.id];
         if (ped) c.appendChild(h('p', 'msg', 'Contacto: ' + ped.contacto + ' · Ref. pagamento: ' + ped.ref_pagamento));
@@ -332,11 +332,14 @@ a{color:var(--acc)}
           cc.onclick = function () { try { navigator.clipboard.writeText(url); cc.textContent = 'Copiado'; } catch (x) { prompt('Copia o link:', url); } };
           b.appendChild(cc);
         }
-        [['Ativar (pagou)', 'ativo'], ['Suspender', 'suspenso'], ['+1 dia de teste', 'teste']].forEach(function (x) {
+        [['Pagou: ativar/renovar +1 mês', 'ativo'], ['Suspender', 'suspenso'], ['+1 dia de teste', 'teste']].forEach(function (x) {
           var bt = h('button', 'btn alt', x[0]); bt.type = 'button';
-          bt.onclick = function () { api('POST', '/api/empresas/' + e.id + '/estado', { estado: x[1], dias: 1 }).then(carregarEmpresas).catch(erro); };
+          bt.onclick = function () { api('POST', '/api/empresas/' + e.id + '/estado', { estado: x[1], dias: 1, meses: 1 }).then(carregarEmpresas).catch(erro); };
           b.appendChild(bt);
         });
+        var kb = h('button', 'btn alt', e.tem_chave ? 'Nova chave da empresa' : 'Gerar chave da empresa'); kb.type = 'button';
+        kb.onclick = function () { api('POST', '/api/empresas/' + e.id + '/chave').then(function (j) { prompt('Copia e envia à empresa (só aparece agora):', j.chave); carregarEmpresas(); }).catch(erro); };
+        b.appendChild(kb);
         c.appendChild(b); L.appendChild(c);
       });
     }).catch(function (x) { $('lista').textContent = x.message; });
@@ -570,3 +573,81 @@ h1{font-size:44px;margin:0 0 8px}h1 span{color:#128c4a}p{margin:6px 0;color:#506
 ''',
     ),
 }
+
+
+# ---------- Portal da empresa (/minha-empresa): cada empresa gere só os seus dados ----------
+ASSETS["minha.html"] = ("text/html; charset=utf-8", r'''<!DOCTYPE html>
+<html lang="pt"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MacTech · Minha empresa</title><link rel="stylesheet" href="/static/painel.css"></head><body>
+<header><b>Mac<span>Tech</span></b> · Minha empresa <button id="sair" class="btn alt" type="button" hidden>Sair</button></header>
+<main>
+<section id="entrar" class="card"><h2>Entrar</h2><p class="msg">Escreva a chave que recebeu ao registar a empresa.</p>
+<form id="fl" class="row"><input id="k" type="password" autocomplete="current-password" aria-label="Chave da empresa" required><button class="btn" type="submit">Entrar</button></form>
+<p id="ml" class="msg"></p></section>
+<div id="portal" hidden>
+<section class="card"><h2 id="nm"></h2><div id="st"></div><p id="vd" class="msg"></p><p id="lk" class="msg"></p><div id="sm" class="msg"></div></section>
+<section class="card"><h2>Informação do assistente</h2>
+<p class="msg">Tudo o que o assistente sabe: produtos, preços, horário, contactos, regras. Atualize aqui sempre que algo mudar.</p>
+<label for="enm">Nome da empresa</label><input id="enm" maxlength="120">
+<label for="epr">Informação e regras do assistente</label><textarea id="epr" rows="10" maxlength="20000"></textarea>
+<label class="chk"><input type="checkbox" id="ehu"> Tenho equipa para atender pessoas</label>
+<div class="row"><button class="btn" id="gv" type="button">Guardar</button></div><p id="mg" class="msg"></p></section>
+<section class="card"><h2>Conversas recentes</h2><div id="cv"></div><div id="tr"></div></section>
+<section class="card"><h2>Perguntas que o assistente não soube responder</h2><p class="msg">Acrescente estas respostas à informação acima.</p><div id="sr"></div></section>
+</div></main><script src="/static/minha.js"></script></body></html>''')
+
+ASSETS["minha.js"] = ("application/javascript; charset=utf-8", r'''(function () {
+  var K = sessionStorage.getItem('mt_empresa') || '', preenchido = false;
+  function $(i) { return document.getElementById(i); }
+  function h(t, c, x) { var e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; }
+  function api(m, u, b) {
+    return fetch(u, { method: m, headers: { 'X-Empresa-Key': K, 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) {
+        if (r.status === 401) { sair(); throw new Error('Chave errada'); }
+        if (!r.ok) throw new Error(j.erro || ('Erro ' + r.status));
+        return j; }); });
+  }
+  function mostrar(on) { $('entrar').hidden = on; $('portal').hidden = !on; $('sair').hidden = !on; }
+  function sair() { sessionStorage.removeItem('mt_empresa'); K = ''; preenchido = false; mostrar(false); }
+  var ROT = { pendente: 'À espera da confirmação do pagamento', teste: 'Em teste', ativo: 'Ativa', suspenso: 'Suspensa' };
+  function carregar() {
+    return api('GET', '/api/minha/resumo').then(function (r) {
+      mostrar(true);
+      $('nm').textContent = r.nome;
+      var st = $('st'); st.textContent = ''; st.appendChild(h('span', 'badge' + (r.ativa ? '' : ' off'), ROT[r.estado] || r.estado));
+      $('vd').textContent = r.valido_ate ? 'Válida até ' + new Date(r.valido_ate).toLocaleDateString('pt-PT') : '';
+      var lk = $('lk'); lk.textContent = '';
+      if (r.chat_url) { var u = location.origin + r.chat_url, a = h('a', null, u); a.href = u; a.target = '_blank'; a.rel = 'noopener'; lk.appendChild(document.createTextNode('Link do seu chat: ')); lk.appendChild(a); }
+      $('sm').textContent = 'Últimos 7 dias: ' + r.semana.pessoas + ' pessoas · ' + r.semana.mensagens + ' mensagens · ' + r.semana.respostas_ia + ' respostas da IA · ' + r.semana.sem_resposta + ' sem resposta';
+      if (!preenchido) { preenchido = true; $('enm').value = r.nome; $('epr').value = r.system_prompt; $('ehu').checked = r.humano_ativo; }
+      var C = $('cv'); C.textContent = '';
+      if (!r.conversas.length) C.appendChild(h('p', 'msg', 'Ainda sem conversas.'));
+      r.conversas.forEach(function (c) {
+        var d = h('div', 'item'); d.style.cursor = 'pointer';
+        d.appendChild(h('b', null, c.canal + (c.contacto ? ' · ' + c.contacto : '') + (c.humano ? ' · à espera de pessoa' : '')));
+        d.appendChild(h('p', 'msg', c.ultima || ''));
+        d.onclick = function () { api('GET', '/api/minha/conversa/' + c.id).then(function (j) {
+          var T = $('tr'); T.textContent = '';
+          j.mensagens.forEach(function (m) { T.appendChild(h('p', 'msg', (m.remetente === 'user' ? 'Cliente: ' : m.remetente === 'human' ? 'Equipa: ' : 'IA: ') + m.conteudo)); });
+          T.scrollIntoView(); }).catch(function (x) { alert(x.message); }); };
+        C.appendChild(d);
+      });
+      var S = $('sr'); S.textContent = '';
+      if (!r.sem_resposta.length) S.appendChild(h('p', 'msg', 'Nada por agora. Bom sinal.'));
+      r.sem_resposta.forEach(function (p) { S.appendChild(h('div', 'item', p.pergunta)); });
+    });
+  }
+  $('gv').onclick = function () {
+    api('PUT', '/api/minha/info', { nome: $('enm').value, system_prompt: $('epr').value, humano_ativo: $('ehu').checked })
+      .then(function () { $('mg').textContent = 'Guardado. O assistente já usa a informação nova.'; preenchido = false; return carregar(); })
+      .catch(function (x) { $('mg').textContent = x.message; });
+  };
+  $('fl').onsubmit = function (ev) {
+    ev.preventDefault(); K = $('k').value.trim();
+    carregar().then(function () { sessionStorage.setItem('mt_empresa', K); $('k').value = ''; $('ml').textContent = ''; })
+      .catch(function (x) { $('ml').textContent = x.message; });
+  };
+  $('sair').onclick = sair;
+  if (K) carregar().catch(function () {}); else mostrar(false);
+  setInterval(function () { if (K && !$('portal').hidden) carregar().catch(function () {}); }, 30000);
+})();''')

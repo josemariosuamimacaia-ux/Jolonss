@@ -70,12 +70,7 @@ def registar(app, exige_admin, limite_excedido, iso_utc, enviar_humano, texto_va
                         return jsonify(erro="departamento inexistente"), 400
                 chave = secrets.token_urlsafe(24)
                 db.add(Agente(empresa_id=eid, nome=nome, chave_hash=_hash(chave), departamento_id=dep_id, ativo=True))
-                try:
-                    db.commit()
-                except IntegrityError:
-                    db.rollback()
-                    log.exception("Falha ao criar atendente para empresa %s", eid)
-                    return jsonify(erro="Não foi possível criar o atendente. Tente novamente."), 409
+                db.commit()
                 extra = {"chave": chave, "aviso": "Guarda esta chave agora: não volta a ser mostrada. O atendente entra em /agente."}
             lista = [{"id": a.id, "nome": a.nome, "departamento": deps.get(a.departamento_id), "ativo": bool(a.ativo)}
                      for a in db.query(Agente).filter_by(empresa_id=eid).order_by(Agente.id)]
@@ -114,20 +109,11 @@ def registar(app, exige_admin, limite_excedido, iso_utc, enviar_humano, texto_va
                 if url and not ferramentas.url_segura(url):
                     return jsonify(erro="a url tem de ser https e pública (não aceitamos endereços internos)"), 400
                 e.integracao_url = url or None
-            if "segredo" in d:
-                segredo = str(d.get("segredo") or "").strip()[:200]
-                if segredo:
-                    e.integracao_segredo = cifrar(segredo)
-                elif e.integracao_url:
-                    return jsonify(erro="define também o segredo (usado para assinar os pedidos)"), 400
+            if d.get("segredo"):
+                e.integracao_segredo = cifrar(str(d["segredo"]).strip()[:200])
             if e.integracao_url and not e.integracao_segredo:
                 return jsonify(erro="define também o segredo (usado para assinar os pedidos)"), 400
-            try:
-                db.commit()
-            except Exception:
-                db.rollback()
-                log.exception("Falha ao guardar integração da empresa %s", eid)
-                return jsonify(erro="Não foi possível guardar a integração."), 500
+            db.commit()
             return jsonify(ferramentas=sorted(ferramentas.ativas(e)), url=e.integracao_url, tem_segredo=bool(e.integracao_segredo))
 
     @app.post("/api/empresas/<int:eid>/produtos")
@@ -141,32 +127,19 @@ def registar(app, exige_admin, limite_excedido, iso_utc, enviar_humano, texto_va
             if not db.get(Empresa, eid):
                 return jsonify(erro="empresa não encontrada"), 404
             n = 0
-            ignorados = 0
             for it in itens:
                 if not isinstance(it, dict):
-                    ignorados += 1
                     continue
                 sku, nome = str(it.get("sku") or "").strip().upper()[:40], str(it.get("nome") or "").strip()[:160]
                 if not sku or not nome:
-                    ignorados += 1
-                    continue
-                preco = _num(it.get("preco"))
-                stock = _num(it.get("stock"), 0)
-                if stock is None or stock < 0:
-                    ignorados += 1
                     continue
                 p = db.query(Produto).filter_by(empresa_id=eid, sku=sku).one_or_none() or Produto(empresa_id=eid, sku=sku)
-                p.nome, p.preco = nome, preco
-                p.stock = int(stock)
+                p.nome, p.preco = nome, _num(it.get("preco"))
+                p.stock = max(0, int(_num(it.get("stock"), 0) or 0))
                 db.add(p)
                 n += 1
-            try:
-                db.commit()
-            except IntegrityError:
-                db.rollback()
-                log.exception("Falha ao importar produtos da empresa %s", eid)
-                return jsonify(erro="Não foi possível importar os produtos."), 409
-            return jsonify(importados=n, ignorados=ignorados)
+            db.commit()
+            return jsonify(importados=n)
 
     @app.post("/api/empresas/<int:eid>/encomendas")
     @exige_admin
@@ -179,29 +152,20 @@ def registar(app, exige_admin, limite_excedido, iso_utc, enviar_humano, texto_va
             if not db.get(Empresa, eid):
                 return jsonify(erro="empresa não encontrada"), 404
             n = 0
-            ignorados = 0
             for it in itens:
                 if not isinstance(it, dict):
-                    ignorados += 1
                     continue
                 cod = str(it.get("codigo") or "").strip().upper()[:40]
                 contacto, estado = str(it.get("contacto") or "").strip()[:120], str(it.get("estado") or "").strip()[:60]
                 if not (cod and contacto and estado):
-                    ignorados += 1
                     continue
-                total = _num(it.get("total"))
                 e = db.query(Encomenda).filter_by(empresa_id=eid, codigo=cod).one_or_none() or Encomenda(empresa_id=eid, codigo=cod)
                 e.contacto, e.estado = contacto, estado
-                e.itens, e.total = (str(it.get("itens") or "")[:1000] or None), total
+                e.itens, e.total = (str(it.get("itens") or "")[:1000] or None), _num(it.get("total"))
                 db.add(e)
                 n += 1
-            try:
-                db.commit()
-            except IntegrityError:
-                db.rollback()
-                log.exception("Falha ao importar encomendas da empresa %s", eid)
-                return jsonify(erro="Não foi possível importar as encomendas."), 409
-            return jsonify(importadas=n, ignoradas=ignorados)
+            db.commit()
+            return jsonify(importadas=n)
 
     def _ticket_json(t, db):
         return {"id": t.id, "empresa_id": t.empresa_id, "departamento": t.departamento, "tipo": t.tipo,
@@ -298,15 +262,11 @@ def registar(app, exige_admin, limite_excedido, iso_utc, enviar_humano, texto_va
             if not c or not _visivel(g.ag, c):
                 return jsonify(erro="conversa não encontrada"), 404
             # Atómico: se dois atendentes clicam ao mesmo tempo, só um fica com a conversa
-            tomou = db.query(Conversa).filter(Conversa.id == cid, Conversa.agente_id.is_(None)).update(
-                {"agente_id": g.ag["id"]}, synchronize_session=False
-            )
+            tomou = db.query(Conversa).filter(Conversa.id == cid, Conversa.agente_id.is_(None)).update({"agente_id": g.ag["id"]})
             db.commit()
-            if not tomou:
-                db.refresh(c)
-                if c.agente_id != g.ag["id"]:
-                    return jsonify(erro="outro atendente já assumiu esta conversa"), 409
-            return jsonify(ok=True, conversa_id=cid, agente_id=g.ag["id"])
+            if not tomou and c.agente_id != g.ag["id"]:
+                return jsonify(erro="outro atendente já assumiu esta conversa"), 409
+            return jsonify(ok=True)
 
     @app.post("/api/agente/responder")
     @exige_agente
@@ -355,10 +315,6 @@ def registar(app, exige_admin, limite_excedido, iso_utc, enviar_humano, texto_va
             t = db.get(Ticket, tid)
             if not t or t.empresa_id != g.ag["empresa_id"]:
                 return jsonify(erro="ticket não encontrado"), 404
-            if g.ag["dep"]:
-                dep = db.get(Departamento, g.ag["dep"])
-                if dep and t.departamento not in (None, dep.nome):
-                    return jsonify(erro="ticket não pertence ao teu departamento"), 403
             t.estado = "fechado"
             db.commit()
             return jsonify(id=t.id, estado=t.estado)

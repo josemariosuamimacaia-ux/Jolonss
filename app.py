@@ -4,6 +4,7 @@ Canais: chat web (/c/<slug>), WhatsApp com número próprio de cada empresa e Wh
 partilhado (o bot pergunta de que empresa o cliente quer ser atendido).
 """
 import csv
+import hashlib
 import hmac
 import io
 import json
@@ -17,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta, timezone
 from functools import wraps
 
-from flask import Flask, Response, abort, jsonify, render_template_string, request
+from flask import Flask, Response, abort, g, jsonify, render_template_string, request
 from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from werkzeug.exceptions import HTTPException
@@ -31,7 +32,7 @@ from assets import ASSETS
 from chat_page import PAGINA
 from config import cfg
 from models import Conversa, Departamento, Empresa, Mensagem, SessionLocal, agora, init_db
-from segredos import cifrar, decifrar
+from segredos import cifrar, decifrar, nova_chave_acesso
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("mactech")
@@ -93,8 +94,11 @@ def estado_de(e) -> str:
 def empresa_ativa(e) -> bool:
     """Ativa = conta paga ('ativo') ou dentro do dia de teste."""
     estado = estado_de(e)
-    if estado == "ativo":
-        return True
+    if estado == "ativo":   # sem plano_ate = conta antiga sem prazo; com plano_ate acaba quando o mês pago termina
+        if not e.plano_ate:
+            return True
+        fim = e.plano_ate if e.plano_ate.tzinfo else e.plano_ate.replace(tzinfo=timezone.utc)
+        return agora() < fim
     if estado == "teste" and e.teste_ate:
         fim = e.teste_ate if e.teste_ate.tzinfo else e.teste_ate.replace(tzinfo=timezone.utc)  # SQLite devolve sem fuso
         return agora() < fim
@@ -366,17 +370,6 @@ def receber_webhook():
 
 
 # ---------- Páginas ----------
-PAGINA_INICIAL = """<!DOCTYPE html>
-<html lang="pt"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MacTech</title>
-<link rel="stylesheet" href="/static/style.css"></head><body><main>
-<h1>Mac<span>Tech</span></h1>
-<p>Assistentes de atendimento com IA para empresas.</p>
-<p>O servidor está a funcionar.</p>
-<p><a class="btn" href="/painel">Entrar no painel</a></p>
-</main></body></html>"""
-
 PAGINA_404 = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Não encontrado</title>
 <link rel="stylesheet" href="/static/style.css"></head><body><main>
@@ -459,7 +452,8 @@ def listar_empresas():
     with SessionLocal() as db:
         return jsonify(empresas=[{
             "id": e.id, "nome": e.nome, "slug": e.slug, "estado": estado_de(e), "ativa": empresa_ativa(e),
-            "teste_ate": iso_utc(e.teste_ate), "humano_ativo": e.humano_ativo is not False,
+            "teste_ate": iso_utc(e.teste_ate), "plano_ate": iso_utc(e.plano_ate), "tem_chave": bool(e.chave_hash),
+            "humano_ativo": e.humano_ativo is not False,
             "chat_url": f"/c/{e.slug}" if e.slug else None, "tem_whatsapp": bool(e.wa_phone_number_id),
         } for e in db.query(Empresa).order_by(Empresa.id).all()])
 
@@ -508,6 +502,13 @@ def mudar_estado(empresa_id):
         if not e:
             return jsonify(erro="empresa não encontrada"), 404
         e.estado = estado
+        if estado == "ativo":   # cada pagamento confirmado soma 30 dias por mês (acumula se renovar antes do fim)
+            try:
+                meses = max(1, min(int(d.get("meses", 1)), 12))
+            except (TypeError, ValueError):
+                return jsonify(erro="meses tem de ser um número"), 400
+            base = max(agora(), e.plano_ate if e.plano_ate and e.plano_ate > agora() else agora())
+            e.plano_ate = base + timedelta(days=30 * meses)
         if estado == "teste":
             try:
                 dias = max(1, min(int(d.get("dias", 1)), 30))
@@ -515,7 +516,7 @@ def mudar_estado(empresa_id):
                 return jsonify(erro="dias tem de ser um número"), 400
             e.teste_ate = agora() + timedelta(days=dias)
         db.commit()
-        return jsonify(id=e.id, estado=e.estado, teste_ate=iso_utc(e.teste_ate))
+        return jsonify(id=e.id, estado=e.estado, teste_ate=iso_utc(e.teste_ate), plano_ate=iso_utc(e.plano_ate))
 
 
 def _dias(padrao, maximo=365):
@@ -736,6 +737,131 @@ def devolver_ia():
         return jsonify(ok=True), 200
 
 
+# ---------- Portal da empresa (cada empresa gere só os seus dados) ----------
+def _aplicar_info(e, d):
+    """Edita nome, instruções do bot e atendimento humano. Devolve uma mensagem de erro, ou None se correu bem."""
+    if "nome" in d:
+        nome = texto_valido(d, "nome", 120)
+        if not nome:
+            return "nome (1 a 120 caracteres)"
+        e.nome = nome
+    if "system_prompt" in d:
+        prompt = texto_valido(d, "system_prompt", 20000)
+        if not prompt:
+            return "informação do bot (1 a 20000 caracteres)"
+        e.system_prompt = prompt
+    if "humano_ativo" in d:
+        e.humano_ativo = bool(d["humano_ativo"])
+    return None
+
+
+@app.post("/api/empresas/<int:empresa_id>/chave")
+@exige_admin
+def gerar_chave_empresa(empresa_id):
+    """Gera (ou troca) a chave com que a empresa entra em /minha-empresa. Só é mostrada agora."""
+    with SessionLocal() as db:
+        e = db.get(Empresa, empresa_id)
+        if not e:
+            return jsonify(erro="empresa não encontrada"), 404
+        chave, e.chave_hash = nova_chave_acesso()
+        db.commit()
+        return jsonify(chave=chave, aviso="Guarda esta chave agora: não volta a ser mostrada. A empresa entra em /minha-empresa.")
+
+
+@app.put("/api/empresas/<int:empresa_id>/info")
+@exige_admin
+def editar_empresa(empresa_id):
+    with SessionLocal() as db:
+        e = db.get(Empresa, empresa_id)
+        if not e:
+            return jsonify(erro="empresa não encontrada"), 404
+        erro = _aplicar_info(e, request.get_json(silent=True) or {})
+        if erro:
+            return jsonify(erro="campo inválido: " + erro), 400
+        db.commit()
+        return jsonify(ok=True)
+
+
+def exige_empresa(f):
+    """Protege o portal da empresa com a chave X-Empresa-Key (guardada só em hash)."""
+    @wraps(f)
+    def wrapper(*a, **kw):
+        if limite_excedido(("empresa_tent", request.remote_addr), 40, 600):
+            return jsonify(erro="demasiadas tentativas, espera uns minutos"), 429
+        chave = request.headers.get("X-Empresa-Key", "")
+        with SessionLocal() as db:
+            e = (db.query(Empresa).filter_by(chave_hash=hashlib.sha256(chave.encode()).hexdigest()).one_or_none()
+                 if len(chave) >= 20 else None)
+            if not e:
+                return jsonify(erro="não autorizado"), 401
+            g.empresa_id = e.id
+        return f(*a, **kw)
+    return wrapper
+
+
+@app.get("/minha-empresa")
+def portal_pagina():
+    return _ficheiro("minha.html")
+
+
+@app.get("/api/minha/resumo")
+@exige_empresa
+def minha_resumo():
+    desde = agora() - timedelta(days=7)
+    with SessionLocal() as db:
+        e = db.get(Empresa, g.empresa_id)
+
+        def contar(**f):
+            q = (db.query(func.count(Mensagem.id)).join(Conversa, Mensagem.conversa_id == Conversa.id)
+                 .filter(Conversa.empresa_id == e.id, Mensagem.data_hora >= desde))
+            if "remetente" in f:
+                q = q.filter(Mensagem.remetente == f["remetente"])
+            if f.get("sem"):
+                q = q.filter(Mensagem.sem_resposta.is_(True))
+            return q.scalar()
+        pessoas = (db.query(func.count(func.distinct(Conversa.id))).join(Mensagem, Mensagem.conversa_id == Conversa.id)
+                   .filter(Conversa.empresa_id == e.id, Mensagem.remetente == "user", Mensagem.data_hora >= desde).scalar())
+        conversas = []
+        for c in db.query(Conversa).filter_by(empresa_id=e.id).order_by(Conversa.id.desc()).limit(20):
+            ult = db.query(Mensagem).filter_by(conversa_id=c.id).order_by(Mensagem.id.desc()).first()
+            conversas.append({"id": c.id, "canal": _canal(c), "contacto": c.contacto, "humano": bool(c.humano_assumiu),
+                              "ultima": ult.conteudo[:140] if ult else None, "quando": iso_utc(ult.data_hora) if ult else None})
+        sem = [{"pergunta": m.conteudo, "quando": iso_utc(m.data_hora)} for m in
+               (db.query(Mensagem).join(Conversa, Mensagem.conversa_id == Conversa.id)
+                .filter(Conversa.empresa_id == e.id, Mensagem.sem_resposta.is_(True))
+                .order_by(Mensagem.id.desc()).limit(20))]
+        return jsonify(
+            nome=e.nome, estado=estado_de(e), ativa=empresa_ativa(e), system_prompt=e.system_prompt,
+            humano_ativo=e.humano_ativo is not False, chat_url=f"/c/{e.slug}" if e.slug else None,
+            valido_ate=iso_utc(e.plano_ate if estado_de(e) == "ativo" else e.teste_ate),
+            semana={"pessoas": pessoas, "mensagens": contar(remetente="user"), "respostas_ia": contar(remetente="assistant"),
+                    "sem_resposta": contar(sem=True)},
+            conversas=conversas, sem_resposta=sem)
+
+
+@app.put("/api/minha/info")
+@exige_empresa
+def minha_info():
+    with SessionLocal() as db:
+        e = db.get(Empresa, g.empresa_id)
+        erro = _aplicar_info(e, request.get_json(silent=True) or {})
+        if erro:
+            return jsonify(erro="campo inválido: " + erro), 400
+        db.commit()
+        return jsonify(ok=True)
+
+
+@app.get("/api/minha/conversa/<int:cid>")
+@exige_empresa
+def minha_conversa(cid):
+    with SessionLocal() as db:
+        c = db.get(Conversa, cid)
+        if not c or c.empresa_id != g.empresa_id:   # nunca mostra conversas de outra empresa
+            return jsonify(erro="conversa não encontrada"), 404
+        msgs = db.query(Mensagem).filter_by(conversa_id=c.id).order_by(Mensagem.id).limit(300).all()
+        return jsonify(mensagens=[{"remetente": m.remetente, "conteudo": m.conteudo, "quando": iso_utc(m.data_hora)} for m in msgs])
+
+
 # ---------- Chat web (público) ----------
 @app.get("/c/<slug>")
 def pagina_chat(slug):
@@ -913,7 +1039,7 @@ def erro_geral(e):
 def cabecalhos(r):
     r.headers.setdefault("X-Content-Type-Options", "nosniff")
     r.headers.setdefault("Referrer-Policy", "no-referrer")
-    if request.path.startswith(("/painel", "/agente")):
+    if request.path.startswith(("/painel", "/agente", "/minha-empresa")):
         r.headers["X-Frame-Options"] = "DENY"     # o painel não pode ser metido num iframe
         r.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
     if request.path.startswith(("/api/", "/chat/")):

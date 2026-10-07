@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 
 from models import Base, Empresa, SessionLocal, agora, engine
+from segredos import nova_chave_acesso
 
 log = logging.getLogger("mactech.publico")
 
@@ -58,6 +59,7 @@ INICIO = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <p>Assistentes de atendimento com IA para empresas.</p>
 <a class="btn" href="/clientes">Sou cliente: quero fazer perguntas</a>
 <a class="btn alt" href="/empresas">Sou uma empresa: quero registar-me</a>
+<a class="btn alt" href="/minha-empresa">Já sou empresa: entrar</a>
 <a class="btn alt" href="/painel">Dono</a>
 </main></body></html>"""
 
@@ -115,7 +117,7 @@ document.getElementById('f').onsubmit = function (ev) {
     contacto: v('c'), ref_pagamento: v('r'), aceita_termos: document.getElementById('t').checked, website: v('w') }) })
     .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
     .then(function (x) {
-      if (x.ok) { m.className = 'msg ok'; m.textContent = 'Pedido enviado. Assim que o pagamento for confirmado, a sua empresa fica disponível aos clientes.'; document.getElementById('f').reset(); }
+      if (x.ok) { m.className = 'msg ok'; m.textContent = 'Pedido enviado. GUARDE esta chave (não volta a ser mostrada): ' + (x.j.chave || '') + ' . Serve para entrar em Minha empresa e ver o estado. Quando o pagamento for confirmado, a empresa fica disponível aos clientes.'; document.getElementById('f').reset(); }
       else { m.className = 'msg erro'; m.textContent = x.j.erro || 'Não foi possível enviar.'; }
     }).catch(function () { m.className = 'msg erro'; m.textContent = 'Sem ligação. Tente de novo.'; });
 };
@@ -171,8 +173,9 @@ def registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug):
             return jsonify(erro="Preencha: " + ", ".join(em_falta) + "."), 400
         if d.get("aceita_termos") is not True:
             return jsonify(erro="Tem de aceitar os termos."), 400
+        chave, chave_hash = nova_chave_acesso()
         empresa = Empresa(nome=f["nome"], system_prompt=_prompt(d, f), humano_ativo=True, no_hub=True,
-                          estado="pendente", teste_ate=None)
+                          estado="pendente", teste_ate=None, chave_hash=chave_hash)
         with SessionLocal() as db:
             empresa.slug = gerar_slug(db, f["nome"])
             db.add(empresa)
@@ -185,7 +188,7 @@ def registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug):
                 log.exception("Não foi possível registar a empresa")
                 return jsonify(erro="Não foi possível registar. Tente de novo."), 409
         log.warning("[ATENÇÃO] Novo pedido de empresa: %s (confirmar pagamento no painel)", f["nome"])
-        return jsonify(ok=True), 201
+        return jsonify(ok=True, chave=chave), 201
 
     @app.get("/api/pedidos")
     @exige_admin
