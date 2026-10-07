@@ -1,7 +1,7 @@
 flask>=3.0,<4
 sqlalchemy>=2.0,<3
-requests>=2.31
-python-dotenv>=1.0
-gunicorn>=22.0
-cryptography>=42.0
-psycopg2-binary>=2.9   # só é usado se DATABASE_URL for PostgreSQL
+requests>=2.31,<3
+python-dotenv>=1.0,<2
+gunicorn>=22.0,<24
+cryptography>=42.0,<47
+psycopg2-binary==2.9.10
