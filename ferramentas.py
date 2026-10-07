@@ -80,7 +80,9 @@ def url_segura(url: str) -> bool:
     """Só https e só para endereços públicos (impede que alguém aponte para a rede interna do servidor)."""
     try:
         p = urlparse(url or "")
-        if p.scheme != "https" or not p.hostname:
+        if p.scheme.lower() != "https" or not p.hostname or p.username or p.password or p.fragment:
+            return False
+        if len(p.hostname) > 253:
             return False
         for info in socket.getaddrinfo(p.hostname, p.port or 443, proto=socket.IPPROTO_TCP):
             ip = ipaddress.ip_address(info[4][0])
@@ -101,11 +103,15 @@ def chamar_externo(empresa: Empresa, acao: str, dados: dict, ctx: Contexto) -> d
     if not url_segura(empresa.integracao_url):
         log.warning("Integração de %s recusada (URL não segura ou inacessível)", empresa.nome)
         return {"erro": "Ligação ao sistema da empresa indisponível."}
+    segredo = decifrar(empresa.integracao_segredo or "")
+    if not segredo:
+        log.error("Integração de %s sem segredo utilizável", empresa.nome)
+        return {"erro": "A integração da empresa não está configurada corretamente."}
     corpo = json.dumps({"acao": acao, "dados": dados, "empresa": empresa.slug, "cliente": sorted(ctx.contactos),
                         "identidade_verificada": ctx.verificado, "ts": int(time.time())},
                        ensure_ascii=False).encode()
     cab = {"Content-Type": "application/json",
-           "X-MacTech-Assinatura": assinar(decifrar(empresa.integracao_segredo or ""), corpo)}
+           "X-MacTech-Assinatura": assinar(segredo, corpo)}
     try:
         r = requests.post(empresa.integracao_url, data=corpo, headers=cab, timeout=8, allow_redirects=False, stream=True)
         bruto = r.raw.read(20001, decode_content=True)
@@ -190,7 +196,30 @@ def _encomenda_do_cliente(db, ctx, codigo):
 
 
 def _json(d) -> str:
-    return json.dumps(d, ensure_ascii=False, default=str)[:3000]
+    """Serializa para JSON válido; nunca corta o texto depois de serializar.
+
+    Cortar uma string JSON em 3000 caracteres pode deixar aspas/chaves abertas e
+    fazer o Gemini receber uma resposta inválida. Limitamos os campos de texto
+    antes da serialização e, se ainda assim for demasiado grande, devolvemos um
+    objeto de erro válido.
+    """
+    def limitar(v, profundidade=0):
+        if profundidade > 5:
+            return "[conteúdo omitido]"
+        if isinstance(v, str):
+            return v[:1200]
+        if isinstance(v, list):
+            return [limitar(x, profundidade + 1) for x in v[:30]]
+        if isinstance(v, dict):
+            return {str(k)[:100]: limitar(val, profundidade + 1) for k, val in list(v.items())[:50]}
+        return v
+    try:
+        bruto = json.dumps(limitar(d), ensure_ascii=False, default=str, separators=(",", ":"))
+        if len(bruto) <= 12000:
+            return bruto
+        return json.dumps({"erro": "resultado demasiado grande; mostra apenas os dados essenciais"}, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return json.dumps({"erro": "resultado indisponível"}, ensure_ascii=False)
 
 
 def executar(ctx: Contexto, nome: str, args: dict) -> str:
@@ -220,8 +249,14 @@ def executar(ctx: Contexto, nome: str, args: dict) -> str:
                                         "em_stock": p.stock > 0, "quantidade": p.stock} for p in q]})
 
         if nome == "consultar_encomenda" and "encomendas" in on:
-            codigo = str(args.get("codigo", "")).strip()
+            codigo = str(args.get("codigo", "")).strip()[:40]
+            if not codigo:
+                return _json({"erro": "diz o código da encomenda"})
+            # A integração externa recebe o contacto já verificado/fornecido,
+            # mas nunca deve ser chamada sem alguma forma de identificação.
             if externo:
+                if not ctx.contactos:
+                    return _json({"erro": "preciso do telefone ou email usado na encomenda"})
                 return _json(chamar_externo(empresa, "consultar_encomenda", {"codigo": codigo}, ctx))
             e, erro = _encomenda_do_cliente(db, ctx, codigo)
             if erro:
@@ -230,8 +265,12 @@ def executar(ctx: Contexto, nome: str, args: dict) -> str:
                           "atualizado": e.atualizado})
 
         if nome == "pedir_fatura" and "fatura" in on:
-            codigo = str(args.get("codigo_encomenda", "")).strip()
+            codigo = str(args.get("codigo_encomenda", "")).strip()[:40]
+            if not codigo:
+                return _json({"erro": "diz o código da encomenda"})
             if externo:   # é o ERP da empresa que emite (software certificado)
+                if not ctx.contactos:
+                    return _json({"erro": "preciso do telefone ou email usado na encomenda"})
                 return _json(chamar_externo(empresa, "pedir_fatura", {"codigo": codigo}, ctx))
             e, erro = _encomenda_do_cliente(db, ctx, codigo)
             if erro:
@@ -248,16 +287,26 @@ def executar(ctx: Contexto, nome: str, args: dict) -> str:
             if not dep:
                 return _json({"erro": "departamento inexistente"})
             if nome == "abrir_ticket":
-                criar_ticket(db, empresa.id, ctx.conversa_id, dep.nome, str(args.get("assunto", "")), "geral")
+                assunto = str(args.get("assunto", "")).strip()[:1000]
+                if not assunto:
+                    return _json({"erro": "assunto obrigatório"})
+                c = db.get(Conversa, ctx.conversa_id)
+                if not c or c.empresa_id != empresa.id:
+                    return _json({"erro": "conversa não encontrada"})
+                criar_ticket(db, empresa.id, ctx.conversa_id, dep.nome, assunto, "geral")
                 db.commit()
                 return _json({"ok": True, "mensagem": f"Pedido registado para {dep.nome}."})
-            resumo = str(args.get("resumo", ""))
+            resumo = str(args.get("resumo", "")).strip()[:1000]
+            c = db.get(Conversa, ctx.conversa_id)
+            if not c or c.empresa_id != empresa.id:
+                return _json({"erro": "conversa não encontrada"})
+            if not resumo:
+                resumo = "Pedido de atendimento humano."
             criar_ticket(db, empresa.id, ctx.conversa_id, dep.nome, resumo, "transferencia")
             if empresa.humano_ativo is False:
                 db.commit()
                 return _json({"ok": False, "mensagem": "A equipa não está disponível agora; o pedido ficou registado e "
                                                        "entram em contacto assim que possível."})
-            c = db.get(Conversa, ctx.conversa_id)
             c.departamento_id, c.humano_assumiu, c.agente_id = dep.id, True, None
             db.commit()
             log.warning("[ATENÇÃO] %s: conversa %s passada a %s", empresa.nome, ctx.conversa_id, dep.nome)

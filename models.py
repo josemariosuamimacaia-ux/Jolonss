@@ -22,7 +22,7 @@ if _sqlite:
         cur.execute("PRAGMA journal_mode=WAL")
         cur.close()
 
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=True)
 
 
 def agora():
@@ -55,6 +55,21 @@ class Empresa(Base):
     ferramentas: Mapped[str | None] = mapped_column(Text, nullable=True)
     integracao_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     integracao_segredo: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PedidoEmpresa(Base):
+    """Pedido de adesão feito publicamente por uma empresa.
+
+    Mantido no módulo de modelos para que toda a metadata da base seja
+    declarada num único sítio e o arranque da aplicação não crie tabelas
+    por efeitos colaterais de importação.
+    """
+    __tablename__ = "pedidos_empresa"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    empresa_id: Mapped[int] = mapped_column(ForeignKey("empresas.id"), index=True)
+    contacto: Mapped[str] = mapped_column(String(120))
+    ref_pagamento: Mapped[str] = mapped_column(String(120))
+    aceitou_termos_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=agora)
 
 
 class Conversa(Base):
@@ -157,17 +172,27 @@ def migrar():
                 if col.name in existentes:
                     continue
                 tipo = col.type.compile(dialect=engine.dialect)
+                # Colunas novas entram primeiro como NULL para não quebrar bases
+                # antigas que já têm linhas. O código de aplicação fornece defaults.
                 try:
                     with engine.begin() as con:
-                        con.execute(text(f'ALTER TABLE "{tabela.name}" ADD COLUMN "{col.name}" {tipo}'))
+                        con.execute(text(
+                            f'ALTER TABLE "{tabela.name}" ADD COLUMN "{col.name}" {tipo}'
+                        ))
                     log.warning("Migração: coluna %s.%s acrescentada", tabela.name, col.name)
                 except Exception:
                     log.exception("Migração: não foi possível acrescentar %s.%s", tabela.name, col.name)
-        # Conversas antigas não tinham phone_number_id: copia o número da empresa
-        with engine.begin() as con:
-            con.execute(text(
-                "UPDATE conversas SET phone_number_id = (SELECT wa_phone_number_id FROM empresas "
-                "WHERE empresas.id = conversas.empresa_id) WHERE phone_number_id IS NULL"))
+        # Conversas antigas podem não ter o número do canal. Só tenta o backfill
+        # quando ambas as tabelas/colunas existem.
+        insp = inspect(engine)
+        if insp.has_table("conversas") and insp.has_table("empresas"):
+            cols = {c["name"] for c in insp.get_columns("conversas")}
+            if "phone_number_id" in cols:
+                with engine.begin() as con:
+                    con.execute(text(
+                        "UPDATE conversas SET phone_number_id = (SELECT wa_phone_number_id FROM empresas "
+                        "WHERE empresas.id = conversas.empresa_id) "
+                        "WHERE phone_number_id IS NULL OR phone_number_id = ''"))
     except Exception:
         log.exception("Migração automática falhou (o servidor continua a arrancar)")
 

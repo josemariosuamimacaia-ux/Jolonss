@@ -25,8 +25,17 @@ def main():
     def pedir(metodo, caminho, **kw):
         try:
             return requests.request(metodo, base + caminho, timeout=T, **kw)
-        except Exception as e:
+        except requests.RequestException as e:
             print(f"        (erro de ligação em {caminho}: {e})")
+            return None
+
+    def json_seguro(r):
+        if r is None:
+            return None
+        try:
+            d = r.json()
+            return d if isinstance(d, dict) else None
+        except (ValueError, requests.RequestException):
             return None
 
     r = pedir("GET", "/")
@@ -51,9 +60,12 @@ def main():
 
     r = pedir("POST", "/api/diagnostico", headers=H)
     if r is not None and r.status_code == 200:
-        d = r.json()
-        passo("Base de dados", d["base_de_dados"])
-        passo("IA (chave, crédito e modelo)", d["ia"]["ok"], d["ia"]["mensagem"])
+        d = json_seguro(r)
+        passo("Diagnóstico devolve JSON", d is not None)
+        if d is not None:
+            passo("Base de dados", bool(d.get("base_de_dados")))
+            ia = d.get("ia") or {}
+            passo("IA (chave, crédito e modelo)", bool(ia.get("ok")), ia.get("mensagem", ""))
     else:
         passo("Diagnóstico", False, r and r.text[:100])
 
@@ -64,18 +76,24 @@ def main():
     passo("Registar empresa de teste", ok, r and r.text[:140])
     if not ok:
         return 1
-    emp = r.json()
+    emp = json_seguro(r)
+    if not emp or not emp.get("chat_url") or not emp.get("slug") or not emp.get("id"):
+        passo("Resposta de criação contém os dados esperados", False, r and r.text[:180])
+        return 1
     r = pedir("GET", emp["chat_url"])
     passo("Página do chat abre", bool(r) and r.status_code == 200, r and str(r.status_code))
 
     sessao, url = uuid.uuid4().hex, f"/chat/{emp['slug']}/mensagem"
     r = pedir("POST", url, json={"sessao": sessao, "texto": "Olá, o telemóvel tem quantos GB?"})
-    resp = (r.json().get("mensagens") if r is not None and r.status_code == 200 else None) or []
+    chat_json = json_seguro(r)
+    resp = (chat_json.get("mensagens") if r is not None and r.status_code == 200 and chat_json else None) or []
     passo("O bot responde a uma pergunta", bool(resp), resp[0]["conteudo"][:100] if resp else (r and r.text[:100]))
     r = pedir("POST", url, json={"sessao": sessao, "texto": "Quero falar com uma pessoa"})
-    passo("Pedido de pessoa passa a conversa a humano", bool(r) and r.status_code == 200 and r.json().get("humano") is True)
+    humano_json = json_seguro(r)
+    passo("Pedido de pessoa passa a conversa a humano", bool(r) and r.status_code == 200 and humano_json and humano_json.get("humano") is True)
     r = pedir("POST", url, json={"sessao": sessao, "texto": "Estás aí?"})
-    passo("Com humano ativo, a IA fica calada", bool(r) and r.status_code == 200 and r.json().get("mensagens") == [])
+    humano_json = json_seguro(r)
+    passo("Com humano ativo, a IA fica calada", bool(r) and r.status_code == 200 and humano_json and humano_json.get("mensagens") == [])
     r = pedir("GET", "/api/estatisticas", headers=H)
     passo("Estatísticas", bool(r) and r.status_code == 200 and any(e["empresa"] == emp["nome"] for e in r.json()["empresas"]))
     r = pedir("GET", "/nao-existe")

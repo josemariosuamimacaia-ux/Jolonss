@@ -104,30 +104,51 @@ def _como_objeto(saida) -> dict:
 
 # ---------- pedidos ----------
 def _pedir(system: str, contents: list, max_tokens: int = 500, ferramentas: list = None) -> dict:
-    """Pede a resposta à IA. Tenta até 3 vezes em erros temporários. Lança RuntimeError se falhar."""
+    """Pede resposta à IA com retries para falhas temporárias."""
+    if not cfg.ai_key:
+        raise RuntimeError("GEMINI_API_KEY não configurada")
+    if not cfg.ai_model:
+        raise RuntimeError("AI_MODEL não configurado")
     ultimo = "erro desconhecido"
     for tentativa in range(3):
+        r = None
         try:
-            r = requests.post(f"{BASE}/{cfg.ai_model}:generateContent", headers=_cab(),
-                              json=_corpo(system, contents, max_tokens, ferramentas), timeout=30)
-        except requests.RequestException as e:
-            ultimo = f"sem ligação à IA: {e}"
-        else:
+            r = requests.post(
+                f"{BASE}/{cfg.ai_model}:generateContent",
+                headers=_cab(),
+                json=_corpo(system, contents, max_tokens, ferramentas),
+                timeout=(10, 45),
+            )
             if r.status_code == 200:
-                return r.json()
+                try:
+                    dados = r.json()
+                except ValueError as exc:
+                    raise RuntimeError("A IA devolveu uma resposta inválida.") from exc
+                if not isinstance(dados, dict):
+                    raise RuntimeError("A IA devolveu um formato inesperado.")
+                return dados
             ultimo = f"A API da IA respondeu {r.status_code}: {r.text[:300]}"
             if r.status_code not in RETENTAR:
                 raise RuntimeError(ultimo)
-        log.warning("IA: tentativa %s falhou (%s)", tentativa + 1, ultimo[:120])
+        except requests.RequestException as exc:
+            ultimo = f"sem ligação à IA: {exc}"
+        finally:
+            if r is not None:
+                r.close()
+        log.warning("IA: tentativa %s falhou (%s)", tentativa + 1, ultimo[:160])
         if tentativa < 2:
             time.sleep(1.5 * (tentativa + 1))
     raise RuntimeError(ultimo)
 
 
 def _cortar_frase(texto: str) -> str:
-    """Se a resposta foi cortada por falta de espaço, termina na última frase completa."""
-    fim = max(texto.rfind(c) for c in ".!?")
-    return texto[:fim + 1] if fim > len(texto) * 0.5 else texto
+    """Se a resposta foi cortada, termina na última frase completa quando possível."""
+    texto = (texto or "").strip()
+    if not texto:
+        return ""
+    posicoes = [texto.rfind(c) for c in ".!?。！？"]
+    fim = max(posicoes, default=-1)
+    return texto[:fim + 1].strip() if fim >= max(0, int(len(texto) * 0.5)) else texto
 
 
 def _limpar(texto: str) -> tuple:
@@ -139,6 +160,14 @@ def responder(system_prompt: str, historico: list, ferramentas: list = None, exe
     """historico: [{'role': 'user'|'assistant', 'content': str}], a começar e a acabar em 'user'.
     ferramentas/executar (nível 4): a IA pode pedir até 4 rondas de ferramentas antes de responder.
     Devolve (texto, sem_resposta). sem_resposta=True se a IA disse que não sabia."""
+    if not isinstance(system_prompt, str):
+        system_prompt = str(system_prompt or "")
+    historico = historico if isinstance(historico, list) else []
+    # Mantém o contrato antigo, mas impede que um histórico corrompido ou gigante
+    # consuma o pedido inteiro à IA. O chamador pode continuar a guardar o histórico completo.
+    historico = [m for m in historico if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+                 and isinstance(m.get("content"), str) and m["content"].strip()]
+    historico = historico[-40:]
     system = system_prompt + contexto_data() + REGRAS_BASE
     contents = _converter(historico)
     dados = {}
@@ -166,7 +195,8 @@ def responder(system_prompt: str, historico: list, ferramentas: list = None, exe
     if fim == "MAX_TOKENS":
         texto = _cortar_frase(texto)
     if not texto:
-        raise ValueError(f"A IA devolveu uma resposta vazia (motivo: {fim or dados.get('promptFeedback')})")
+        motivo = fim or dados.get("promptFeedback") or "sem conteúdo"
+        raise ValueError(f"A IA devolveu uma resposta vazia (motivo: {motivo})")
     return texto, sem
 
 
@@ -174,6 +204,13 @@ def responder_stream(system_prompt: str, historico: list, max_tokens: int = 500)
     """Como responder(), mas devolve a resposta aos poucos para o cliente ver o texto a aparecer.
     Gera tuplos ('texto', pedaço) e, no fim, ('fim', texto_completo, sem_resposta).
     Lança RuntimeError se a IA falhar antes de enviar qualquer texto."""
+    if not cfg.ai_key:
+        raise RuntimeError("GEMINI_API_KEY não configurada")
+    if not cfg.ai_model:
+        raise RuntimeError("AI_MODEL não configurado")
+    historico = historico if isinstance(historico, list) else []
+    historico = [m for m in historico if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+                 and isinstance(m.get("content"), str) and m["content"].strip()][-40:]
     system = system_prompt + contexto_data() + REGRAS_BASE
     corpo = _corpo(system, _converter(historico), max_tokens)
     url = f"{BASE}/{cfg.ai_model}:streamGenerateContent?alt=sse"
