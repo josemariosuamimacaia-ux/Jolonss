@@ -10,33 +10,16 @@ from config import cfg
 
 log = logging.getLogger("mactech.db")
 
-# Normaliza URLs PostgreSQL comuns no Render para o driver psycopg2.
-def _normalizar_database_url(url: str) -> str:
-    url = (url or "").strip()
-    if url.startswith("postgres://"):
-        return "postgresql+psycopg2://" + url[len("postgres://"):]
-    if url.startswith("postgresql://"):
-        return "postgresql+psycopg2://" + url[len("postgresql://"):]
-    return url
-
-_DATABASE_URL = _normalizar_database_url(cfg.database_url)
-_sqlite = _DATABASE_URL.startswith("sqlite")
-
-if _sqlite:
-    engine = create_engine(
-        _DATABASE_URL,
-        pool_pre_ping=True,
-        connect_args={"timeout": 30},
-    )
-else:
-    engine = create_engine(
-        _DATABASE_URL,
-        pool_pre_ping=True,
-        pool_recycle=1800,
-        pool_size=5,
-        max_overflow=5,
-        connect_args={"connect_timeout": 15},
-    )
+_sqlite = cfg.database_url.startswith("sqlite")
+URL_INVALIDA = False   # True se o DATABASE_URL estiver mal escrito (o site arranca e mostra um aviso, em vez de fechar)
+try:
+    engine = create_engine(cfg.database_url, pool_pre_ping=True,
+                           **({"connect_args": {"timeout": 30}} if _sqlite else {}))
+except Exception:
+    log.exception("DATABASE_URL inválido ou driver em falta (tem de começar por postgresql://)")
+    URL_INVALIDA = True
+    _sqlite = True
+    engine = create_engine("sqlite:///mactech.db")   # só para o site conseguir arrancar; não é usado enquanto o URL estiver inválido
 
 if _sqlite:
     @event.listens_for(engine, "connect")
@@ -46,18 +29,7 @@ if _sqlite:
         cur.execute("PRAGMA journal_mode=WAL")
         cur.close()
 
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=True)
-
-
-def verificar_base_de_dados() -> tuple[bool, str]:
-    """Testa a ligação real à base sem expor credenciais."""
-    try:
-        with engine.connect() as con:
-            con.execute(text("SELECT 1"))
-        return True, "Ligação à base de dados OK."
-    except Exception as e:
-        log.exception("Falha na ligação à base de dados")
-        return False, f"{type(e).__name__}: {str(e)[:220]}"
+SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def agora():
@@ -90,21 +62,6 @@ class Empresa(Base):
     ferramentas: Mapped[str | None] = mapped_column(Text, nullable=True)
     integracao_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     integracao_segredo: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-
-class PedidoEmpresa(Base):
-    """Pedido de adesão feito publicamente por uma empresa.
-
-    Mantido no módulo de modelos para que toda a metadata da base seja
-    declarada num único sítio e o arranque da aplicação não crie tabelas
-    por efeitos colaterais de importação.
-    """
-    __tablename__ = "pedidos_empresa"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    empresa_id: Mapped[int] = mapped_column(ForeignKey("empresas.id"), index=True)
-    contacto: Mapped[str] = mapped_column(String(120))
-    ref_pagamento: Mapped[str] = mapped_column(String(120))
-    aceitou_termos_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=agora)
 
 
 class Conversa(Base):
@@ -207,27 +164,17 @@ def migrar():
                 if col.name in existentes:
                     continue
                 tipo = col.type.compile(dialect=engine.dialect)
-                # Colunas novas entram primeiro como NULL para não quebrar bases
-                # antigas que já têm linhas. O código de aplicação fornece defaults.
                 try:
                     with engine.begin() as con:
-                        con.execute(text(
-                            f'ALTER TABLE "{tabela.name}" ADD COLUMN "{col.name}" {tipo}'
-                        ))
+                        con.execute(text(f'ALTER TABLE "{tabela.name}" ADD COLUMN "{col.name}" {tipo}'))
                     log.warning("Migração: coluna %s.%s acrescentada", tabela.name, col.name)
                 except Exception:
                     log.exception("Migração: não foi possível acrescentar %s.%s", tabela.name, col.name)
-        # Conversas antigas podem não ter o número do canal. Só tenta o backfill
-        # quando ambas as tabelas/colunas existem.
-        insp = inspect(engine)
-        if insp.has_table("conversas") and insp.has_table("empresas"):
-            cols = {c["name"] for c in insp.get_columns("conversas")}
-            if "phone_number_id" in cols:
-                with engine.begin() as con:
-                    con.execute(text(
-                        "UPDATE conversas SET phone_number_id = (SELECT wa_phone_number_id FROM empresas "
-                        "WHERE empresas.id = conversas.empresa_id) "
-                        "WHERE phone_number_id IS NULL OR phone_number_id = ''"))
+        # Conversas antigas não tinham phone_number_id: copia o número da empresa
+        with engine.begin() as con:
+            con.execute(text(
+                "UPDATE conversas SET phone_number_id = (SELECT wa_phone_number_id FROM empresas "
+                "WHERE empresas.id = conversas.empresa_id) WHERE phone_number_id IS NULL"))
     except Exception:
         log.exception("Migração automática falhou (o servidor continua a arrancar)")
 

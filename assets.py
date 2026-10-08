@@ -316,7 +316,7 @@ a{color:var(--acc)}
       r[0].empresas.forEach(function (e) {
         var c = h('div', 'item');
         c.appendChild(h('b', null, e.nome + ' '));
-        var vd = e.estado === 'ativo' ? e.plano_ate : e.teste_ate, fim = (e.estado === 'teste' || e.estado === 'ativo') && vd ? ' até ' + new Date(vd).toLocaleString('pt-PT') : '';
+        var fim = e.estado === 'teste' && e.teste_ate ? ' até ' + new Date(e.teste_ate).toLocaleString('pt-PT') : '';
         c.appendChild(h('span', 'badge' + (e.ativa ? '' : ' off'), e.estado + fim));
         var ped = r[2].pedidos[e.id];
         if (ped) c.appendChild(h('p', 'msg', 'Contacto: ' + ped.contacto + ' · Ref. pagamento: ' + ped.ref_pagamento));
@@ -332,14 +332,11 @@ a{color:var(--acc)}
           cc.onclick = function () { try { navigator.clipboard.writeText(url); cc.textContent = 'Copiado'; } catch (x) { prompt('Copia o link:', url); } };
           b.appendChild(cc);
         }
-        [['Pagou: ativar/renovar +1 mês', 'ativo'], ['Suspender', 'suspenso'], ['+1 dia de teste', 'teste']].forEach(function (x) {
+        [['Ativar (pagou)', 'ativo'], ['Suspender', 'suspenso'], ['+1 dia de teste', 'teste']].forEach(function (x) {
           var bt = h('button', 'btn alt', x[0]); bt.type = 'button';
-          bt.onclick = function () { api('POST', '/api/empresas/' + e.id + '/estado', { estado: x[1], dias: 1, meses: 1 }).then(carregarEmpresas).catch(erro); };
+          bt.onclick = function () { api('POST', '/api/empresas/' + e.id + '/estado', { estado: x[1], dias: 1 }).then(carregarEmpresas).catch(erro); };
           b.appendChild(bt);
         });
-        var kb = h('button', 'btn alt', e.tem_chave ? 'Nova chave da empresa' : 'Gerar chave da empresa'); kb.type = 'button';
-        kb.onclick = function () { api('POST', '/api/empresas/' + e.id + '/chave').then(function (j) { prompt('Copia e envia à empresa (só aparece agora):', j.chave); carregarEmpresas(); }).catch(erro); };
-        b.appendChild(kb);
         c.appendChild(b); L.appendChild(c);
       });
     }).catch(function (x) { $('lista').textContent = x.message; });
@@ -575,79 +572,61 @@ h1{font-size:44px;margin:0 0 8px}h1 span{color:#128c4a}p{margin:6px 0;color:#506
 }
 
 
-# ---------- Portal da empresa (/minha-empresa): cada empresa gere só os seus dados ----------
-ASSETS["minha.html"] = ("text/html; charset=utf-8", r'''<!DOCTYPE html>
-<html lang="pt"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MacTech · Minha empresa</title><link rel="stylesheet" href="/static/painel.css"></head><body>
-<header><b>Mac<span>Tech</span></b> · Minha empresa <button id="sair" class="btn alt" type="button" hidden>Sair</button></header>
-<main>
-<section id="entrar" class="card"><h2>Entrar</h2><p class="msg">Escreva a chave que recebeu ao registar a empresa.</p>
-<form id="fl" class="row"><input id="k" type="password" autocomplete="current-password" aria-label="Chave da empresa" required><button class="btn" type="submit">Entrar</button></form>
-<p id="ml" class="msg"></p></section>
-<div id="portal" hidden>
-<section class="card"><h2 id="nm"></h2><div id="st"></div><p id="vd" class="msg"></p><p id="lk" class="msg"></p><div id="sm" class="msg"></div></section>
-<section class="card"><h2>Informação do assistente</h2>
-<p class="msg">Tudo o que o assistente sabe: produtos, preços, horário, contactos, regras. Atualize aqui sempre que algo mudar.</p>
-<label for="enm">Nome da empresa</label><input id="enm" maxlength="120">
-<label for="epr">Informação e regras do assistente</label><textarea id="epr" rows="10" maxlength="20000"></textarea>
-<label class="chk"><input type="checkbox" id="ehu"> Tenho equipa para atender pessoas</label>
-<div class="row"><button class="btn" id="gv" type="button">Guardar</button></div><p id="mg" class="msg"></p></section>
-<section class="card"><h2>Conversas recentes</h2><div id="cv"></div><div id="tr"></div></section>
-<section class="card"><h2>Perguntas que o assistente não soube responder</h2><p class="msg">Acrescente estas respostas à informação acima.</p><div id="sr"></div></section>
-</div></main><script src="/static/minha.js"></script></body></html>''')
+# ---- Tema empresarial: substitui os estilos acima (os nomes das classes não mudam, por isso o JavaScript continua igual) ----
+ASSETS["chat.css"] = ("text/css; charset=utf-8", r'''
+:root{--bg:#eef2f7;--card:#fff;--ink:#0b1f3a;--mut:#5b6b80;--out:#0b8a4c;--outT:#fff;--hum:#fff0c9;--acc:#0b8a4c;--accT:#fff;--line:#dfe6ef}
+@media(prefers-color-scheme:dark){:root{--bg:#07121f;--card:#0f2036;--ink:#e8eef6;--mut:#9db0c6;--out:#1a7a52;--outT:#fff;--hum:#5b4710;--acc:#2fcf7a;--accT:#04180f;--line:#1c3350}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);-webkit-font-smoothing:antialiased}
+header{background:linear-gradient(135deg,#0b1f3a,#123a63 60%,#0f7a55 140%);color:#fff;padding:14px 16px;display:flex;gap:12px;align-items:center;box-shadow:0 2px 12px rgba(11,31,58,.25)}
+header b{font-size:17px}header small{display:block;opacity:.9;font-size:12px}
+header small::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:#35e08a;margin-right:6px}
+.dot{width:42px;height:42px;border-radius:50%;background:#fff;color:#0b1f3a;display:grid;place-items:center;font-weight:800;font-size:18px;flex:none}
+#log{flex:1;overflow-y:auto;padding:16px 14px;display:flex;flex-direction:column;gap:10px;scroll-behavior:smooth}
+.m{max-width:84%;padding:10px 14px;border-radius:18px;white-space:pre-wrap;word-wrap:break-word;box-shadow:0 1px 2px rgba(11,31,58,.1)}
+.m.assistant{background:var(--card);align-self:flex-start;border-bottom-left-radius:5px}
+.m.me{background:var(--out);color:var(--outT);align-self:flex-end;border-bottom-right-radius:5px}
+.m.human{background:var(--hum);color:var(--ink);align-self:flex-start;border-bottom-left-radius:5px}
+.m small{display:block;color:var(--mut);font-size:11px;margin-bottom:2px}.m.me small{color:inherit;opacity:.8}
+form{display:flex;gap:8px;padding:10px 12px;background:var(--card);border-top:1px solid var(--line)}
+input{flex:1;min-width:0;border:1.5px solid var(--line);border-radius:999px;padding:12px 16px;font:16px system-ui;background:var(--bg);color:var(--ink)}
+input:focus{border-color:var(--acc)}
+button{background:var(--acc);color:var(--accT);border:0;border-radius:999px;padding:12px 20px;font:700 15px system-ui;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+footer{text-align:center;font-size:11.5px;color:var(--mut);padding:5px 10px calc(7px + env(safe-area-inset-bottom));background:var(--card)}
+.sug{display:flex;flex-wrap:wrap;gap:8px;align-self:flex-start;max-width:94%}
+.chip{background:var(--card);color:var(--ink);border:1.5px solid var(--acc);border-radius:999px;padding:7px 14px;font:600 13.5px system-ui,sans-serif;cursor:pointer}
+.chip:hover{background:var(--acc);color:var(--accT)}.chip:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+''')
 
-ASSETS["minha.js"] = ("application/javascript; charset=utf-8", r'''(function () {
-  var K = sessionStorage.getItem('mt_empresa') || '', preenchido = false;
-  function $(i) { return document.getElementById(i); }
-  function h(t, c, x) { var e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; }
-  function api(m, u, b) {
-    return fetch(u, { method: m, headers: { 'X-Empresa-Key': K, 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined })
-      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) {
-        if (r.status === 401) { sair(); throw new Error('Chave errada'); }
-        if (!r.ok) throw new Error(j.erro || ('Erro ' + r.status));
-        return j; }); });
-  }
-  function mostrar(on) { $('entrar').hidden = on; $('portal').hidden = !on; $('sair').hidden = !on; }
-  function sair() { sessionStorage.removeItem('mt_empresa'); K = ''; preenchido = false; mostrar(false); }
-  var ROT = { pendente: 'À espera da confirmação do pagamento', teste: 'Em teste', ativo: 'Ativa', suspenso: 'Suspensa' };
-  function carregar() {
-    return api('GET', '/api/minha/resumo').then(function (r) {
-      mostrar(true);
-      $('nm').textContent = r.nome;
-      var st = $('st'); st.textContent = ''; st.appendChild(h('span', 'badge' + (r.ativa ? '' : ' off'), ROT[r.estado] || r.estado));
-      $('vd').textContent = r.valido_ate ? 'Válida até ' + new Date(r.valido_ate).toLocaleDateString('pt-PT') : '';
-      var lk = $('lk'); lk.textContent = '';
-      if (r.chat_url) { var u = location.origin + r.chat_url, a = h('a', null, u); a.href = u; a.target = '_blank'; a.rel = 'noopener'; lk.appendChild(document.createTextNode('Link do seu chat: ')); lk.appendChild(a); }
-      $('sm').textContent = 'Últimos 7 dias: ' + r.semana.pessoas + ' pessoas · ' + r.semana.mensagens + ' mensagens · ' + r.semana.respostas_ia + ' respostas da IA · ' + r.semana.sem_resposta + ' sem resposta';
-      if (!preenchido) { preenchido = true; $('enm').value = r.nome; $('epr').value = r.system_prompt; $('ehu').checked = r.humano_ativo; }
-      var C = $('cv'); C.textContent = '';
-      if (!r.conversas.length) C.appendChild(h('p', 'msg', 'Ainda sem conversas.'));
-      r.conversas.forEach(function (c) {
-        var d = h('div', 'item'); d.style.cursor = 'pointer';
-        d.appendChild(h('b', null, c.canal + (c.contacto ? ' · ' + c.contacto : '') + (c.humano ? ' · à espera de pessoa' : '')));
-        d.appendChild(h('p', 'msg', c.ultima || ''));
-        d.onclick = function () { api('GET', '/api/minha/conversa/' + c.id).then(function (j) {
-          var T = $('tr'); T.textContent = '';
-          j.mensagens.forEach(function (m) { T.appendChild(h('p', 'msg', (m.remetente === 'user' ? 'Cliente: ' : m.remetente === 'human' ? 'Equipa: ' : 'IA: ') + m.conteudo)); });
-          T.scrollIntoView(); }).catch(function (x) { alert(x.message); }); };
-        C.appendChild(d);
-      });
-      var S = $('sr'); S.textContent = '';
-      if (!r.sem_resposta.length) S.appendChild(h('p', 'msg', 'Nada por agora. Bom sinal.'));
-      r.sem_resposta.forEach(function (p) { S.appendChild(h('div', 'item', p.pergunta)); });
-    });
-  }
-  $('gv').onclick = function () {
-    api('PUT', '/api/minha/info', { nome: $('enm').value, system_prompt: $('epr').value, humano_ativo: $('ehu').checked })
-      .then(function () { $('mg').textContent = 'Guardado. O assistente já usa a informação nova.'; preenchido = false; return carregar(); })
-      .catch(function (x) { $('mg').textContent = x.message; });
-  };
-  $('fl').onsubmit = function (ev) {
-    ev.preventDefault(); K = $('k').value.trim();
-    carregar().then(function () { sessionStorage.setItem('mt_empresa', K); $('k').value = ''; $('ml').textContent = ''; })
-      .catch(function (x) { $('ml').textContent = x.message; });
-  };
-  $('sair').onclick = sair;
-  if (K) carregar().catch(function () {}); else mostrar(false);
-  setInterval(function () { if (K && !$('portal').hidden) carregar().catch(function () {}); }, 30000);
-})();''')
+ASSETS["painel.css"] = ("text/css; charset=utf-8", r'''
+:root{--bg:#f1f4f9;--card:#fff;--ink:#0b1f3a;--mut:#5b6b80;--acc:#0b8a4c;--accT:#fff;--line:#e0e7f0;--off:#ffd9d4;--shadow:0 6px 20px rgba(11,31,58,.07)}
+@media(prefers-color-scheme:dark){:root{--bg:#07121f;--card:#0f2036;--ink:#e8eef6;--mut:#9db0c6;--acc:#2fcf7a;--accT:#04180f;--line:#1c3350;--off:#5a2a25;--shadow:none}}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+header{padding:16px;font-size:20px;font-weight:800;display:flex;gap:10px;align-items:center;margin-bottom:16px;background:linear-gradient(135deg,#0b1f3a,#123a63 60%,#0f7a55 140%);color:#fff}
+header span{color:#35e08a}header button{margin-left:auto}header .btn.alt{color:#fff;border-color:rgba(255,255,255,.5)}
+main{max-width:860px;margin:0 auto;padding:0 14px 48px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:16px;box-shadow:var(--shadow)}
+h2{margin:0 0 10px;font-size:19px;letter-spacing:-.01em}
+label{display:block;font-size:13px;font-weight:600;color:var(--mut);margin:12px 0 4px}
+.chk{display:flex;gap:8px;align-items:center;color:var(--ink);font-size:15px}
+input,textarea{width:100%;border:1.5px solid var(--line);border-radius:12px;padding:10px 12px;font:16px system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+input:focus,textarea:focus{border-color:var(--acc);outline:none}input[type=checkbox]{width:auto}
+.row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}.row input{flex:1;min-width:0}
+.btn{background:var(--acc);color:var(--accT);border:0;border-radius:10px;padding:10px 16px;font:700 14px system-ui,sans-serif;cursor:pointer}
+.btn:hover{filter:brightness(1.07)}.btn.alt{background:transparent;color:var(--ink);border:1.5px solid var(--line)}
+.btn:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.msg{color:var(--mut);font-size:14px;margin:6px 0;word-break:break-word}
+.item{border-top:1px solid var(--line);padding:12px 0}
+.badge{display:inline-block;border-radius:999px;padding:2px 11px;font-size:12px;font-weight:700;background:var(--acc);color:var(--accT)}
+.badge.off{background:var(--off);color:var(--ink)}
+a{color:var(--acc)}
+''')
+
+ASSETS["style.css"] = ("text/css; charset=utf-8", r'''
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f3f6fb;color:#0b1f3a;font:16px/1.5 system-ui,sans-serif;text-align:center;padding:20px}
+@media(prefers-color-scheme:dark){body{background:#07121f;color:#e8eef6}}
+h1{font-size:40px;margin:0 0 8px;letter-spacing:-.03em}h1 span{color:#0f9d58}p{margin:6px 0;color:#58677d}
+.btn{display:inline-block;margin-top:12px;background:#0f9d58;color:#fff;border-radius:12px;padding:12px 22px;font-weight:700;text-decoration:none}
+''')
