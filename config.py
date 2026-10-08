@@ -63,6 +63,18 @@ def _modelo_ia() -> str:
     return m if m and not m.lower().startswith("claude") else "gemini-3.1-flash-lite"
 
 
+def _url_bd() -> str:
+    """Limpa o DATABASE_URL: ao colar no telemóvel costumam sobrar espaços, quebras de linha, aspas ou a palavra 'psql'."""
+    v = os.getenv("DATABASE_URL", "").strip().strip("\"'").strip()
+    if v.lower().startswith("psql"):
+        v = v[4:].strip().strip("\"'")
+    v = "".join(v.split())   # um endereço de base de dados nunca tem espaços
+    if not v:
+        return "sqlite:///mactech.db"
+    # Muitos serviços dão "postgres://", mas o SQLAlchemy precisa de "postgresql://"
+    return v.replace("postgres://", "postgresql://", 1)
+
+
 def carregar() -> Config:
     problemas = [f"{k}: {desc}" for k, desc in OBRIGATORIAS.items()
                  if k != "GEMINI_API_KEY" and not os.getenv(k, "").strip()]
@@ -78,7 +90,7 @@ def carregar() -> Config:
         ai_key=_chave_ia(),
         admin_key=os.getenv("ADMIN_API_KEY", "").strip(),
         # Muitos serviços dão "postgres://", mas o SQLAlchemy precisa de "postgresql://"
-        database_url=os.getenv("DATABASE_URL", "sqlite:///mactech.db").replace("postgres://", "postgresql://", 1),
+        database_url=_url_bd(),
         ai_model=_modelo_ia(),
         graph_version=os.getenv("GRAPH_API_VERSION", "v21.0"),
         max_workers=_inteiro("MAX_WORKERS", 8, problemas),

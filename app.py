@@ -30,7 +30,7 @@ import whatsapp
 from assets import ASSETS
 from chat_page import PAGINA
 from config import cfg
-from models import URL_INVALIDA, Conversa, Departamento, Empresa, Mensagem, SessionLocal, agora, init_db
+from models import URL_ERRO, URL_INVALIDA, Conversa, Departamento, Empresa, Mensagem, SessionLocal, agora, descrever_erro_db, init_db
 from segredos import cifrar, decifrar
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -40,20 +40,23 @@ app = Flask(__name__, static_folder=None)   # os ficheiros do site vêm de asset
 if cfg.trust_proxy:   # atrás de um proxy, lê o IP real do visitante
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
-_db = {"ok": False, "tentativa": 0.0}
+_db = {"ok": False, "tentativa": 0.0, "erro": ""}
 
 
 def preparar_db():
     """Cria/atualiza as tabelas. Se a base falhar, o site NÃO fecha: mostra um aviso e volta a tentar sozinho."""
     if URL_INVALIDA:
         _db["ok"] = False
+        _db["erro"] = descrever_erro_db(URL_ERRO)
         _db["tentativa"] = time.time()
         return
     try:
         init_db()
         _db["ok"] = True
-    except Exception:
+        _db["erro"] = ""
+    except Exception as e:
         _db["ok"] = False
+        _db["erro"] = descrever_erro_db(e)
         log.exception("Não foi possível preparar a base de dados (confirma DATABASE_URL)")
     _db["tentativa"] = time.time()
 
@@ -433,6 +436,7 @@ def verificar_configuracao():
             return ("<!DOCTYPE html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
                     "<body style='font-family:sans-serif;max-width:560px;margin:2rem auto;padding:0 1rem'>"
                     "<h1>MacTech: a ligar à base de dados</h1><p>O serviço está a arrancar. Tente de novo dentro de instantes.</p>"
+                    f"<p><b>Diagnóstico:</b> {_db['erro']}.</p>"
                     "<p>Se continuar assim, o dono deve confirmar o <b>DATABASE_URL</b> no Render: tem de começar por <b>postgresql://</b>, sem aspas nem espaços.</p>", 503)
 
 
@@ -456,7 +460,7 @@ def saude():
     if not _db["ok"]:
         preparar_db()
         if not _db["ok"]:
-            return jsonify(status="erro", base_de_dados="indisponível"), 503
+            return jsonify(status="erro", base_de_dados="indisponível", diagnostico=_db["erro"]), 503
     try:
         with SessionLocal() as db:
             db.execute(text("SELECT 1"))

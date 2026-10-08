@@ -11,13 +11,15 @@ from config import cfg
 log = logging.getLogger("mactech.db")
 
 _sqlite = cfg.database_url.startswith("sqlite")
+URL_ERRO = None
 URL_INVALIDA = False   # True se o DATABASE_URL estiver mal escrito (o site arranca e mostra um aviso, em vez de fechar)
 try:
     engine = create_engine(cfg.database_url, pool_pre_ping=True,
-                           **({"connect_args": {"timeout": 30}} if _sqlite else {}))
-except Exception:
+                           connect_args=({"timeout": 30} if _sqlite else {"connect_timeout": 10}))
+except Exception as _e:
     log.exception("DATABASE_URL inválido ou driver em falta (tem de começar por postgresql://)")
     URL_INVALIDA = True
+    URL_ERRO = _e
     _sqlite = True
     engine = create_engine("sqlite:///mactech.db")   # só para o site conseguir arrancar; não é usado enquanto o URL estiver inválido
 
@@ -149,6 +151,26 @@ class Ticket(Base):
     assunto: Mapped[str] = mapped_column(Text)
     estado: Mapped[str] = mapped_column(String(10), default="aberto", index=True)  # 'aberto' ou 'fechado'
     criado: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=agora)
+
+
+def descrever_erro_db(e) -> str:
+    """Diz em português o que provavelmente está mal, sem mostrar o texto do erro (pode conter o endereço da base)."""
+    msg = str(e).lower()
+    if isinstance(e, ModuleNotFoundError) or "no module named" in msg:
+        return "falta a biblioteca psycopg2-binary no requirements.txt"
+    if type(e).__name__ == "ArgumentError" or "could not parse" in msg:
+        return "o DATABASE_URL está mal escrito (tem de começar por postgresql://)"
+    if "password authentication failed" in msg:
+        return "o utilizador ou a palavra-passe do Neon estão errados"
+    if "could not translate host name" in msg or "name or service not known" in msg:
+        return "o endereço (host) do Neon está errado"
+    if "does not exist" in msg and "database" in msg:
+        return "o nome da base de dados no endereço não existe"
+    if "ssl" in msg:
+        return "o Neon exige ligação segura: o endereço deve terminar em ?sslmode=require"
+    if "timeout" in msg or "timed out" in msg:
+        return "o Neon demorou demasiado a responder (pode estar a acordar: espere um minuto)"
+    return f"erro {type(e).__name__} (veja o log do Render)"
 
 
 def migrar():
