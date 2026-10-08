@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import platform
 import re
 import threading
 import time
@@ -40,6 +41,7 @@ app = Flask(__name__, static_folder=None)   # os ficheiros do site vêm de asset
 if cfg.trust_proxy:   # atrás de um proxy, lê o IP real do visitante
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
+VERSAO = "2026-10-08-d"   # mostra qual versão do código está mesmo ativa no Render
 _db = {"ok": False, "tentativa": 0.0, "erro": ""}
 
 
@@ -437,6 +439,7 @@ def verificar_configuracao():
                     "<body style='font-family:sans-serif;max-width:560px;margin:2rem auto;padding:0 1rem'>"
                     "<h1>MacTech: a ligar à base de dados</h1><p>O serviço está a arrancar. Tente de novo dentro de instantes.</p>"
                     f"<p><b>Diagnóstico:</b> {_db['erro']}.</p>"
+                    f"<p style='color:#666;font-size:13px'>Versão {VERSAO} · Python {platform.python_version()}</p>"
                     "<p>Se continuar assim, o dono deve confirmar o <b>DATABASE_URL</b> no Render: tem de começar por <b>postgresql://</b>, sem aspas nem espaços.</p>", 503)
 
 
@@ -460,14 +463,15 @@ def saude():
     if not _db["ok"]:
         preparar_db()
         if not _db["ok"]:
-            return jsonify(status="erro", base_de_dados="indisponível", diagnostico=_db["erro"]), 503
+            return jsonify(status="erro", base_de_dados="indisponível", diagnostico=_db["erro"],
+                           versao=VERSAO, python=platform.python_version()), 503
     try:
         with SessionLocal() as db:
             db.execute(text("SELECT 1"))
     except Exception:
         log.exception("Base de dados indisponível")
         return jsonify(status="erro"), 503
-    return jsonify(status="ok")
+    return jsonify(status="ok", versao=VERSAO)
 
 
 # ---------- API de administração ----------

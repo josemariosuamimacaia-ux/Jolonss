@@ -1,5 +1,7 @@
 """Base de dados (SQLite ou PostgreSQL via SQLAlchemy): empresas, conversas e mensagens."""
+import importlib.util
 import logging
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint,
@@ -11,11 +13,31 @@ from config import cfg
 log = logging.getLogger("mactech.db")
 
 _sqlite = cfg.database_url.startswith("sqlite")
+
+
+def preparar_url(url: str, usar_psycopg2: bool):
+    """Devolve (url, connect_args). Para PostgreSQL usa o pg8000 (Python puro: instala em qualquer versão do Python,
+    ao contrário do psycopg2, que precisa de ficheiros compilados). O pg8000 não entende ?sslmode=..., por isso
+    esse parâmetro vira ssl_context (o Neon exige ligação segura)."""
+    if url.startswith("sqlite"):
+        return url, {"timeout": 30}
+    p = urlsplit(url)
+    if p.scheme in ("postgresql", "postgres"):
+        if usar_psycopg2:
+            return url, {"connect_timeout": 10}
+        sslmode = (parse_qs(p.query).get("sslmode") or [""])[0].lower()
+        args = {"timeout": 10}
+        if sslmode in ("require", "verify-ca", "verify-full") or (p.hostname or "").endswith(".neon.tech"):
+            args["ssl_context"] = True
+        return urlunsplit(("postgresql+pg8000", p.netloc, p.path, "", "")), args
+    return url, {}
+
+
 URL_ERRO = None
 URL_INVALIDA = False   # True se o DATABASE_URL estiver mal escrito (o site arranca e mostra um aviso, em vez de fechar)
 try:
-    engine = create_engine(cfg.database_url, pool_pre_ping=True,
-                           connect_args=({"timeout": 30} if _sqlite else {"connect_timeout": 10}))
+    _url, _args = preparar_url(cfg.database_url, importlib.util.find_spec("pg8000") is None)   # pg8000 sempre que estiver instalado
+    engine = create_engine(_url, pool_pre_ping=True, connect_args=_args)
 except Exception as _e:
     log.exception("DATABASE_URL inválido ou driver em falta (tem de começar por postgresql://)")
     URL_INVALIDA = True
@@ -157,7 +179,7 @@ def descrever_erro_db(e) -> str:
     """Diz em português o que provavelmente está mal, sem mostrar o texto do erro (pode conter o endereço da base)."""
     msg = str(e).lower()
     if isinstance(e, ModuleNotFoundError) or "no module named" in msg:
-        return "falta a biblioteca psycopg2-binary no requirements.txt"
+        return f"falta a biblioteca '{getattr(e, 'name', None) or 'desconhecida'}' no requirements.txt (precisa de pg8000)"
     if type(e).__name__ == "ArgumentError" or "could not parse" in msg:
         return "o DATABASE_URL está mal escrito (tem de começar por postgresql://)"
     if "password authentication failed" in msg:
