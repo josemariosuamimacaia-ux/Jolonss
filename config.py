@@ -28,6 +28,8 @@ class Config:
     trust_proxy: bool   # True atrás de um proxy (Render, Railway...) para ler o IP real
     max_dia_empresa: int   # mensagens de clientes por empresa em 24 h (controla custos)
     problemas: tuple   # o que está mal configurado (vazio = tudo bem)
+    fallback_key: str = ""   # chave da IA de reserva (Groq), opcional: sem ela tudo funciona como antes
+    fallback_model: str = "llama-3.3-70b-versatile"   # modelo da reserva (muda com GROQ_MODEL)
 
 
 def _inteiro(nome: str, padrao: int, problemas: list) -> int:
@@ -63,16 +65,13 @@ def _modelo_ia() -> str:
     return m if m and not m.lower().startswith("claude") else "gemini-3.1-flash-lite"
 
 
-def _url_bd() -> str:
-    """Limpa o DATABASE_URL: ao colar no telemóvel costumam sobrar espaços, quebras de linha, aspas ou a palavra 'psql'."""
-    v = os.getenv("DATABASE_URL", "").strip().strip("\"'").strip()
-    if v.lower().startswith("psql"):
-        v = v[4:].strip().strip("\"'")
-    v = "".join(v.split())   # um endereço de base de dados nunca tem espaços
-    if not v:
-        return "sqlite:///mactech.db"
-    # Muitos serviços dão "postgres://", mas o SQLAlchemy precisa de "postgresql://"
-    return v.replace("postgres://", "postgresql://", 1)
+def _chave_reserva() -> str:
+    """Chave grátis do Groq (começa por gsk_). Opcional: se faltar, não há reserva e nada muda."""
+    return os.getenv("GROQ_API_KEY", "").strip().strip('"').strip("'")
+
+
+def _modelo_reserva() -> str:
+    return os.getenv("GROQ_MODEL", "").strip() or "llama-3.3-70b-versatile"
 
 
 def carregar() -> Config:
@@ -90,7 +89,7 @@ def carregar() -> Config:
         ai_key=_chave_ia(),
         admin_key=os.getenv("ADMIN_API_KEY", "").strip(),
         # Muitos serviços dão "postgres://", mas o SQLAlchemy precisa de "postgresql://"
-        database_url=_url_bd(),
+        database_url=os.getenv("DATABASE_URL", "sqlite:///mactech.db").replace("postgres://", "postgresql://", 1),
         ai_model=_modelo_ia(),
         graph_version=os.getenv("GRAPH_API_VERSION", "v21.0"),
         max_workers=_inteiro("MAX_WORKERS", 8, problemas),
@@ -99,6 +98,8 @@ def carregar() -> Config:
         trust_proxy=_proxy_auto(),
         max_dia_empresa=_inteiro("MAX_MSG_DIA_EMPRESA", 3000, problemas),
         problemas=tuple(problemas),
+        fallback_key=_chave_reserva(),
+        fallback_model=_modelo_reserva(),
     )
 
 

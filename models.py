@@ -76,7 +76,7 @@ class Empresa(Base):
     nome: Mapped[str] = mapped_column(String(120))
     slug: Mapped[str | None] = mapped_column(String(60), unique=True, index=True, nullable=True)  # endereço do chat web
     wa_phone_number_id: Mapped[str | None] = mapped_column(String(40), unique=True, index=True, nullable=True)
-    wa_access_token: Mapped[str | None] = mapped_column(Text, nullable=True)  # TODO: cifrar em produção
+    wa_access_token: Mapped[str | None] = mapped_column(Text, nullable=True)  # guardado cifrado (ver segredos.py)
     system_prompt: Mapped[str] = mapped_column(Text)     # catálogo + regras do negócio
     humano_ativo: Mapped[bool] = mapped_column(Boolean, default=True)  # a empresa tem equipa para atender?
     no_hub: Mapped[bool] = mapped_column(Boolean, default=True)        # aparece na lista do número partilhado?
@@ -86,6 +86,8 @@ class Empresa(Base):
     ferramentas: Mapped[str | None] = mapped_column(Text, nullable=True)
     integracao_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     integracao_segredo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plano_ate: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # fim do mês pago (vazio = sem prazo)
+    chave_hash: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)       # chave de acesso do portal da empresa
 
 
 class Conversa(Base):

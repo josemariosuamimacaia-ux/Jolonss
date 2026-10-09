@@ -39,7 +39,7 @@ O dono **não é programador**: trabalha só pelo telemóvel, edita ficheiros pe
 | `assets.py` | todo o CSS, JS e HTML do chat, do painel e da página do agente |
 | `chat_page.py` | página de chat de cada empresa (`/c/<slug>`) |
 | `nivel4.py`, `ferramentas.py`, `segredos.py` | departamentos, atendentes, ferramentas da IA (stock, encomenda, fatura, transferência), ligação a ERP, cifra de tokens |
-| `whatsapp.py` | assinatura HMAC e envio de mensagens |
+| `whatsapp.py` | assinatura HMAC, envio de texto e listas, descarga de áudios e imagens |
 | `verificar.py` | script que testa o site publicado |
 | `requirements.txt`, `Procfile`, `render.yaml` | instalação e arranque no Render |
 | `README.md`, `GUIA_RENDER.md`, `NIVEL4.md`, `INTEGRACAO.md` | documentação |
@@ -51,6 +51,8 @@ O dono **não é programador**: trabalha só pelo telemóvel, edita ficheiros pe
 - Passagem a humano; devolução à IA; fila de atendentes por departamento.
 - Ferramentas da IA: consultar stock, consultar encomenda (valida telefone/email), pedir fatura (não emite: quem emite é o ERP certificado), transferir para departamento, abrir ticket.
 - Painel: empresas, estatísticas, conversas, perguntas sem resposta, contactos, CSV, botão "Testar sistema".
+- v5: cópia de segurança em JSON (`/api/backup`, botão no painel), comandos para voltar à lista de empresas e `testes_offline.py`.
+- v4: o WhatsApp lê áudios e imagens (Gemini, mesma chave), passa a humano clientes zangados, envia lista tocável na triagem do número partilhado e responde com mensagem simpática se algo falhar. IA de reserva opcional (Groq, `GROQ_API_KEY`). Versão visível em `/saude`.
 - Registo público de empresas com termos, pagamento e aprovação do dono; lista pública só com empresas aprovadas.
 - Segurança: chave de administração com bloqueio após tentativas erradas, painel sem iframe, deduplicação de mensagens da Meta, honeypot e limite no registo público.
 
@@ -61,6 +63,7 @@ O dono **não é programador**: trabalha só pelo telemóvel, edita ficheiros pe
 - O limite gratuito do Gemini é pequeno e instável; quando falha, o cliente recebe a mensagem de erro/atendente humano. Ideia pendente: usar um segundo fornecedor gratuito (por exemplo Groq) como reserva e uma camada de FAQ que responde perguntas simples sem chamar a IA.
 - Os modelos de IA mudam de nome e são desligados com frequência: confirmar sempre o nome atual na documentação oficial.
 - O telemóvel renomeia ficheiros repetidos (`app-1.py`, `config (1).py`): o dono já teve o site a correr a versão antiga por isso.
+- A v4 foi testada só com simulações (sem base de dados nem Meta reais): confirmar no Render, no painel (Testar sistema) e com mensagens reais de voz e imagem.
 - O registo público não foi testado ponta a ponta com PostgreSQL real (só com testes parciais).
 - Os termos de uso são um modelo e precisam de revisão por um advogado.
 - O limitador de pedidos é em memória (cada worker conta à parte).

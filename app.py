@@ -4,6 +4,7 @@ Canais: chat web (/c/<slug>), WhatsApp com número próprio de cada empresa e Wh
 partilhado (o bot pergunta de que empresa o cliente quer ser atendido).
 """
 import csv
+import hashlib
 import hmac
 import io
 import json
@@ -18,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta, timezone
 from functools import wraps
 
-from flask import Flask, Response, abort, jsonify, render_template_string, request
+from flask import Flask, Response, abort, g, jsonify, render_template_string, request
 from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from werkzeug.exceptions import HTTPException
@@ -31,8 +32,9 @@ import whatsapp
 from assets import ASSETS
 from chat_page import PAGINA
 from config import cfg
-from models import URL_ERRO, URL_INVALIDA, Conversa, Departamento, Empresa, Mensagem, SessionLocal, agora, descrever_erro_db, init_db
-from segredos import cifrar, decifrar
+from models import (URL_ERRO, URL_INVALIDA, Conversa, Departamento, Empresa, Encomenda, Mensagem, Produto, SessionLocal,
+                    Ticket, agora, descrever_erro_db, init_db)
+from segredos import cifrar, decifrar, nova_chave_acesso
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("mactech")
@@ -41,7 +43,7 @@ app = Flask(__name__, static_folder=None)   # os ficheiros do site vêm de asset
 if cfg.trust_proxy:   # atrás de um proxy, lê o IP real do visitante
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
-VERSAO = "2026-10-08-d"   # mostra qual versão do código está mesmo ativa no Render
+VERSAO = "2026-10-08-g-v5"   # mostra qual versão do código está mesmo ativa no Render
 _db = {"ok": False, "tentativa": 0.0, "erro": ""}
 
 
@@ -74,9 +76,16 @@ MSG_INDISPONIVEL = ("Este atendimento automático está temporariamente indispon
 MSG_ERRO = "Desculpa, tive um problema técnico. Tenta novamente daqui a pouco."
 MSG_LIMITE = ("Recebemos muitas mensagens hoje e o atendimento automático voltou a ficar ocupado. "
               "Tenta de novo mais tarde ou contacte a empresa diretamente.")
-MSG_SO_TEXTO = "De momento só consigo ler mensagens de texto. Podes escrever a tua pergunta?"
+MSG_SO_TEXTO = "De momento só consigo ler mensagens de texto, voz e imagens. Podes escrever a tua pergunta?"
+MSG_TRANSICAO_ZANGADO = ("Lamento muito o que aconteceu. Vou passar a conversa a uma pessoa da equipa "
+                         "para resolver isto contigo. Já te respondem por aqui.")
 TERMOS_HUMANO = ("reclamacao", "humano", "atendente", "falar com pessoa", "falar com uma pessoa", "falar com alguem",
                  "pessoa real", "operador", "gerente", "responsavel", "falar com a equipa", "falar com um agente")
+# Sinais claros de cliente zangado (sem acentos). Lista curta de propósito: palavras como "roubo" ou "advogado"
+# ficam de fora porque podem ser o assunto normal de seguradoras, escritórios e segurança.
+TERMOS_ZANGADO = ("pessimo", "pessima", "vergonha", "burla", "enganaram", "enganado", "enganada", "nunca mais",
+                  "inaceitavel", "indignado", "indignada", "revoltado", "revoltada", "palhacada", "incompetente",
+                  "exijo", "reclamar")
 SESSAO_RE = re.compile(r"[A-Za-z0-9\-]{16,64}")
 CONTACTO_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+|\+?\d[\d \-]{7,}\d")
 
@@ -91,6 +100,22 @@ def normalizar(texto: str) -> str:
 def pede_humano(texto: str) -> bool:
     n = normalizar(texto)
     return any(termo in n for termo in TERMOS_HUMANO)
+
+
+FRASES_TROCAR_EMPRESA = ("mudar de empresa", "trocar de empresa", "outra empresa", "menu principal", "voltar ao menu",
+                         "lista de empresas")
+
+
+def quer_trocar_empresa(texto: str) -> bool:
+    """No número partilhado: o cliente pede para voltar à lista de empresas."""
+    n = normalizar(texto)
+    return any(f in n for f in FRASES_TROCAR_EMPRESA)
+
+
+def cliente_zangado(texto: str) -> bool:
+    """Deteta insatisfação clara para passar a conversa a uma pessoa antes de piorar."""
+    n = normalizar(texto)
+    return any(termo in n for termo in TERMOS_ZANGADO)
 
 
 def achar_empresa(empresas: list, texto: str):
@@ -113,8 +138,11 @@ def estado_de(e) -> str:
 def empresa_ativa(e) -> bool:
     """Ativa = conta paga ('ativo') ou dentro do dia de teste."""
     estado = estado_de(e)
-    if estado == "ativo":
-        return True
+    if estado == "ativo":   # sem plano_ate = conta antiga sem prazo; com plano_ate acaba quando o mês pago termina
+        if not e.plano_ate:
+            return True
+        fim = e.plano_ate if e.plano_ate.tzinfo else e.plano_ate.replace(tzinfo=timezone.utc)
+        return agora() < fim
     if estado == "teste" and e.teste_ate:
         fim = e.teste_ate if e.teste_ate.tzinfo else e.teste_ate.replace(tzinfo=timezone.utc)  # SQLite devolve sem fuso
         return agora() < fim
@@ -216,11 +244,14 @@ def preparar(db, empresa, conversa, texto):
     if not empresa_ativa(empresa):
         log.warning("[ATENÇÃO] %s: teste terminou ou conta suspensa, bot desligado", empresa.nome)
         return "fixo", MSG_INDISPONIVEL
-    if pede_humano(texto):
+    pediu = pede_humano(texto)
+    zangado = empresa.humano_ativo is not False and cliente_zangado(texto)   # sem equipa, a IA continua a atender
+    if pediu or zangado:
         if empresa.humano_ativo is not False:
             conversa.humano_assumiu = True
-            log.warning("[ATENÇÃO] %s: cliente %s pediu atendimento humano", empresa.nome, conversa.cliente_numero)
-            return "fixo", MSG_TRANSICAO
+            log.warning("[ATENÇÃO] %s: cliente %s %s", empresa.nome, conversa.cliente_numero,
+                        "pediu atendimento humano" if pediu else "parece zangado: passou a humano")
+            return "fixo", (MSG_TRANSICAO if pediu else MSG_TRANSICAO_ZANGADO)
         return "fixo", MSG_SEM_HUMANO
     if limite_diario_atingido(db, empresa):
         log.warning("[ATENÇÃO] %s: limite diário de mensagens atingido", empresa.nome)
@@ -286,11 +317,37 @@ def processar(pnid: str, msg: dict):
                 _em_curso.discard(wa_id)
 
 
+def _ler_midia(token: str, msg: dict, tipo: str) -> str:
+    """Áudio ou imagem -> texto (o Gemini transcreve ou descreve). Devolve '' se não foi possível."""
+    info = msg.get(tipo) or {}
+    legenda = (info.get("caption") or "").strip()
+    resultado = ""
+    try:
+        if info.get("id"):
+            dados, mime = whatsapp.baixar_midia(token, info["id"])
+            resultado = ia.entender_midia(dados, mime or info.get("mime_type") or "", tipo)
+    except Exception as e:
+        log.warning("Não foi possível ler %s do cliente: %s", tipo, str(e)[:200])
+    if tipo == "audio":
+        return f"[Mensagem de voz do cliente] {resultado}"[:2000] if resultado else ""
+    if resultado:
+        extra = f" Legenda do cliente: {legenda}" if legenda else ""
+        return f"[Imagem enviada pelo cliente] {resultado}{extra}"[:2000]
+    return legenda[:2000]   # sem conseguir ver a imagem, usa pelo menos a legenda
+
+
 def _processar(pnid: str, msg: dict):
+    numero = token = None   # para conseguir avisar o cliente se algo falhar a meio
     try:
         numero = msg["from"]
         tipo = msg.get("type")
-        texto = ((msg.get("text") or {}).get("body") or "").strip()[:2000] if tipo == "text" else ""
+        texto = ""
+        if tipo == "text":
+            texto = ((msg.get("text") or {}).get("body") or "").strip()[:2000]
+        elif tipo == "interactive":   # o cliente tocou numa opção da lista: conta como se tivesse escrito o número
+            resp = (msg.get("interactive") or {}).get("list_reply") or (msg.get("interactive") or {}).get("button_reply") or {}
+            texto = str(resp.get("id") or resp.get("title") or "").strip()[:200]
+            tipo = "text"
         wa_id = msg.get("id")
         if tipo == "text" and not texto:
             return
@@ -311,8 +368,15 @@ def _processar(pnid: str, msg: dict):
                 token = decifrar(empresa.wa_access_token)
                 conversa = obter_conversa(db, pnid, numero, empresa.id)
 
-            if tipo != "text":   # áudio, imagem, etc.: avisa o cliente em vez de o deixar sem resposta
-                if tipo in ("audio", "image", "video", "document", "voice", "sticker", "location"):
+            if tipo in ("audio", "image"):   # voz e fotos: o Gemini lê-as e a conversa segue como texto
+                db.commit()   # liberta a base de dados enquanto o ficheiro é descarregado e lido
+                texto = _ler_midia(token, msg, tipo)
+                if not texto:
+                    whatsapp.enviar_texto(token, pnid, numero, MSG_SO_TEXTO)
+                    return
+                tipo = "text"
+            if tipo != "text":   # vídeo, documento, etc.: avisa o cliente em vez de o deixar sem resposta
+                if tipo in ("video", "document", "voice", "sticker", "location"):
                     whatsapp.enviar_texto(token, pnid, numero, MSG_SO_TEXTO)
                 return
 
@@ -320,10 +384,11 @@ def _processar(pnid: str, msg: dict):
             registar_contacto(conversa, texto)
             db.commit()   # guarda já a mensagem (e marca-a como tratada) antes de chamar a IA
 
-            if hub and "mudar de empresa" in normalizar(texto):   # o cliente pode trocar de empresa
+            if hub and quer_trocar_empresa(texto):   # o cliente pode trocar de empresa
                 conversa.empresa_id, conversa.humano_assumiu, empresa = None, False, None
 
             escolheu = False
+            lista_itens = None   # opções para a lista tocável (a triagem também funciona só com texto)
             if hub and empresa is None:
                 # Triagem: perceber de que empresa o cliente quer ser atendido
                 empresas = [e for e in db.query(Empresa).filter(Empresa.no_hub.isnot(False)).order_by(Empresa.id).all()
@@ -334,11 +399,14 @@ def _processar(pnid: str, msg: dict):
                     escolhida = achar_empresa(empresas, texto)
                     if escolhida:
                         conversa.empresa_id, escolheu = escolhida.id, True
-                        resposta = f"Perfeito! Está a falar com {escolhida.nome}. Como posso ajudar?"
+                        resposta = (f"Perfeito! Está a falar com {escolhida.nome}. Como posso ajudar? "
+                                    "(Para trocar de empresa, escreva «mudar de empresa».)")
                         log.info("Conversa %s ligada a %s", numero, escolhida.nome)
                     else:
                         lista = "\n".join(f"{i + 1} {e.nome}" for i, e in enumerate(empresas))
                         resposta = f"Olá! De que empresa quer ser atendido? Responda com o número ou o nome:\n{lista}"
+                        if 2 <= len(empresas) <= 10:
+                            lista_itens = [(str(i + 1), e.nome) for i, e in enumerate(empresas)]
             else:
                 resposta = decidir_resposta(db, empresa, conversa, texto, mu)
                 if resposta is None:   # um humano assumiu: a IA não responde
@@ -351,9 +419,21 @@ def _processar(pnid: str, msg: dict):
                 db.flush()
                 conversa.inicio_historico_id = m.id   # a IA só vê o que vier depois da escolha
             db.commit()
-            whatsapp.enviar_texto(token, pnid, numero, resposta)
+            if lista_itens:
+                try:
+                    whatsapp.enviar_lista(token, pnid, numero, "Olá! De que empresa quer ser atendido? Toque no botão para escolher.", lista_itens)
+                except Exception as e:   # plano B: a mesma pergunta em texto
+                    log.warning("Lista do WhatsApp falhou (%s): a enviar em texto", str(e)[:150])
+                    whatsapp.enviar_texto(token, pnid, numero, resposta)
+            else:
+                whatsapp.enviar_texto(token, pnid, numero, resposta)
     except Exception:
         log.exception("Erro ao processar mensagem do WhatsApp")
+        if token and numero:   # o cliente nunca fica sem resposta nem vê o erro técnico
+            try:
+                whatsapp.enviar_texto(token, pnid, numero, MSG_ERRO)
+            except Exception:
+                log.warning("Também não foi possível avisar o cliente do erro")
 
 
 @app.get("/webhook")
@@ -386,17 +466,6 @@ def receber_webhook():
 
 
 # ---------- Páginas ----------
-PAGINA_INICIAL = """<!DOCTYPE html>
-<html lang="pt"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MacTech</title>
-<link rel="stylesheet" href="/static/style.css"></head><body><main>
-<h1>Mac<span>Tech</span></h1>
-<p>Assistentes de atendimento com IA para empresas.</p>
-<p>O servidor está a funcionar.</p>
-<p><a class="btn" href="/painel">Entrar no painel</a></p>
-</main></body></html>"""
-
 PAGINA_404 = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Não encontrado</title>
 <link rel="stylesheet" href="/static/style.css"></head><body><main>
@@ -406,7 +475,7 @@ PAGINA_404 = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 
 @app.get("/")
 def inicio():
-    return publico.pagina_inicio()
+    return publico.INICIO
 
 
 def _ficheiro(nome):
@@ -494,7 +563,8 @@ def listar_empresas():
     with SessionLocal() as db:
         return jsonify(empresas=[{
             "id": e.id, "nome": e.nome, "slug": e.slug, "estado": estado_de(e), "ativa": empresa_ativa(e),
-            "teste_ate": iso_utc(e.teste_ate), "humano_ativo": e.humano_ativo is not False,
+            "teste_ate": iso_utc(e.teste_ate), "plano_ate": iso_utc(e.plano_ate), "tem_chave": bool(e.chave_hash),
+            "humano_ativo": e.humano_ativo is not False,
             "chat_url": f"/c/{e.slug}" if e.slug else None, "tem_whatsapp": bool(e.wa_phone_number_id),
         } for e in db.query(Empresa).order_by(Empresa.id).all()])
 
@@ -543,6 +613,13 @@ def mudar_estado(empresa_id):
         if not e:
             return jsonify(erro="empresa não encontrada"), 404
         e.estado = estado
+        if estado == "ativo":   # cada pagamento confirmado soma 30 dias por mês (acumula se renovar antes do fim)
+            try:
+                meses = max(1, min(int(d.get("meses", 1)), 12))
+            except (TypeError, ValueError):
+                return jsonify(erro="meses tem de ser um número"), 400
+            base = max(agora(), e.plano_ate if e.plano_ate and e.plano_ate > agora() else agora())
+            e.plano_ate = base + timedelta(days=30 * meses)
         if estado == "teste":
             try:
                 dias = max(1, min(int(d.get("dias", 1)), 30))
@@ -550,7 +627,7 @@ def mudar_estado(empresa_id):
                 return jsonify(erro="dias tem de ser um número"), 400
             e.teste_ate = agora() + timedelta(days=dias)
         db.commit()
-        return jsonify(id=e.id, estado=e.estado, teste_ate=iso_utc(e.teste_ate))
+        return jsonify(id=e.id, estado=e.estado, teste_ate=iso_utc(e.teste_ate), plano_ate=iso_utc(e.plano_ate))
 
 
 def _dias(padrao, maximo=365):
@@ -682,6 +759,38 @@ def exportar_csv():
                     headers={"Content-Disposition": "attachment; filename=mactech_conversas.csv"})
 
 
+# ---------- cópia de segurança ----------
+# Só o que é preciso para refazer o negócio de cada empresa. Nunca inclui tokens do WhatsApp, chaves nem segredos.
+_BACKUP = {
+    "empresas": (Empresa, ("id", "nome", "slug", "wa_phone_number_id", "system_prompt", "humano_ativo", "no_hub", "estado",
+                           "teste_ate", "plano_ate", "ferramentas", "integracao_url")),
+    "departamentos": (Departamento, ("id", "empresa_id", "nome", "descricao")),
+    "produtos": (Produto, ("id", "empresa_id", "sku", "nome", "preco", "stock")),
+    "encomendas": (Encomenda, ("id", "empresa_id", "codigo", "contacto", "estado", "itens", "total", "atualizado")),
+    "tickets": (Ticket, ("id", "empresa_id", "conversa_id", "departamento", "tipo", "assunto", "estado", "criado")),
+}
+
+
+def _valor_json(v):
+    return iso_utc(v) if hasattr(v, "isoformat") else v
+
+
+@app.get("/api/backup")
+@exige_admin
+def backup():
+    """Descarrega um ficheiro JSON com empresas, departamentos, produtos, encomendas e tickets."""
+    saida = {"versao": VERSAO, "criado": iso_utc(agora()),
+             "aviso": "Sem tokens do WhatsApp, chaves nem segredos: se for preciso restaurar, voltam a ser introduzidos. "
+                      "Contém contactos de clientes: guarda este ficheiro em local privado.",
+             "tabelas": {}}
+    with SessionLocal() as db:
+        for nome, (modelo, campos) in _BACKUP.items():
+            saida["tabelas"][nome] = [{c: _valor_json(getattr(r, c)) for c in campos}
+                                      for r in db.query(modelo).order_by(modelo.id).all()]
+    return Response(json.dumps(saida, ensure_ascii=False, indent=1), mimetype="application/json",
+                    headers={"Content-Disposition": f"attachment; filename=mactech_backup_{agora():%Y%m%d}.json"})
+
+
 @app.post("/api/diagnostico")
 @exige_admin
 def diagnostico():
@@ -769,6 +878,131 @@ def devolver_ia():
         c.humano_assumiu, c.agente_id, c.departamento_id = False, None, None
         db.commit()
         return jsonify(ok=True), 200
+
+
+# ---------- Portal da empresa (cada empresa gere só os seus dados) ----------
+def _aplicar_info(e, d):
+    """Edita nome, instruções do bot e atendimento humano. Devolve uma mensagem de erro, ou None se correu bem."""
+    if "nome" in d:
+        nome = texto_valido(d, "nome", 120)
+        if not nome:
+            return "nome (1 a 120 caracteres)"
+        e.nome = nome
+    if "system_prompt" in d:
+        prompt = texto_valido(d, "system_prompt", 20000)
+        if not prompt:
+            return "informação do bot (1 a 20000 caracteres)"
+        e.system_prompt = prompt
+    if "humano_ativo" in d:
+        e.humano_ativo = bool(d["humano_ativo"])
+    return None
+
+
+@app.post("/api/empresas/<int:empresa_id>/chave")
+@exige_admin
+def gerar_chave_empresa(empresa_id):
+    """Gera (ou troca) a chave com que a empresa entra em /minha-empresa. Só é mostrada agora."""
+    with SessionLocal() as db:
+        e = db.get(Empresa, empresa_id)
+        if not e:
+            return jsonify(erro="empresa não encontrada"), 404
+        chave, e.chave_hash = nova_chave_acesso()
+        db.commit()
+        return jsonify(chave=chave, aviso="Guarda esta chave agora: não volta a ser mostrada. A empresa entra em /minha-empresa.")
+
+
+@app.put("/api/empresas/<int:empresa_id>/info")
+@exige_admin
+def editar_empresa(empresa_id):
+    with SessionLocal() as db:
+        e = db.get(Empresa, empresa_id)
+        if not e:
+            return jsonify(erro="empresa não encontrada"), 404
+        erro = _aplicar_info(e, request.get_json(silent=True) or {})
+        if erro:
+            return jsonify(erro="campo inválido: " + erro), 400
+        db.commit()
+        return jsonify(ok=True)
+
+
+def exige_empresa(f):
+    """Protege o portal da empresa com a chave X-Empresa-Key (guardada só em hash)."""
+    @wraps(f)
+    def wrapper(*a, **kw):
+        if limite_excedido(("empresa_tent", request.remote_addr), 40, 600):
+            return jsonify(erro="demasiadas tentativas, espera uns minutos"), 429
+        chave = request.headers.get("X-Empresa-Key", "")
+        with SessionLocal() as db:
+            e = (db.query(Empresa).filter_by(chave_hash=hashlib.sha256(chave.encode()).hexdigest()).one_or_none()
+                 if len(chave) >= 20 else None)
+            if not e:
+                return jsonify(erro="não autorizado"), 401
+            g.empresa_id = e.id
+        return f(*a, **kw)
+    return wrapper
+
+
+@app.get("/minha-empresa")
+def portal_pagina():
+    return _ficheiro("minha.html")
+
+
+@app.get("/api/minha/resumo")
+@exige_empresa
+def minha_resumo():
+    desde = agora() - timedelta(days=7)
+    with SessionLocal() as db:
+        e = db.get(Empresa, g.empresa_id)
+
+        def contar(**f):
+            q = (db.query(func.count(Mensagem.id)).join(Conversa, Mensagem.conversa_id == Conversa.id)
+                 .filter(Conversa.empresa_id == e.id, Mensagem.data_hora >= desde))
+            if "remetente" in f:
+                q = q.filter(Mensagem.remetente == f["remetente"])
+            if f.get("sem"):
+                q = q.filter(Mensagem.sem_resposta.is_(True))
+            return q.scalar()
+        pessoas = (db.query(func.count(func.distinct(Conversa.id))).join(Mensagem, Mensagem.conversa_id == Conversa.id)
+                   .filter(Conversa.empresa_id == e.id, Mensagem.remetente == "user", Mensagem.data_hora >= desde).scalar())
+        conversas = []
+        for c in db.query(Conversa).filter_by(empresa_id=e.id).order_by(Conversa.id.desc()).limit(20):
+            ult = db.query(Mensagem).filter_by(conversa_id=c.id).order_by(Mensagem.id.desc()).first()
+            conversas.append({"id": c.id, "canal": _canal(c), "contacto": c.contacto, "humano": bool(c.humano_assumiu),
+                              "ultima": ult.conteudo[:140] if ult else None, "quando": iso_utc(ult.data_hora) if ult else None})
+        sem = [{"pergunta": m.conteudo, "quando": iso_utc(m.data_hora)} for m in
+               (db.query(Mensagem).join(Conversa, Mensagem.conversa_id == Conversa.id)
+                .filter(Conversa.empresa_id == e.id, Mensagem.sem_resposta.is_(True))
+                .order_by(Mensagem.id.desc()).limit(20))]
+        return jsonify(
+            nome=e.nome, estado=estado_de(e), ativa=empresa_ativa(e), system_prompt=e.system_prompt,
+            humano_ativo=e.humano_ativo is not False, chat_url=f"/c/{e.slug}" if e.slug else None,
+            valido_ate=iso_utc(e.plano_ate if estado_de(e) == "ativo" else e.teste_ate),
+            semana={"pessoas": pessoas, "mensagens": contar(remetente="user"), "respostas_ia": contar(remetente="assistant"),
+                    "sem_resposta": contar(sem=True)},
+            conversas=conversas, sem_resposta=sem)
+
+
+@app.put("/api/minha/info")
+@exige_empresa
+def minha_info():
+    with SessionLocal() as db:
+        e = db.get(Empresa, g.empresa_id)
+        erro = _aplicar_info(e, request.get_json(silent=True) or {})
+        if erro:
+            return jsonify(erro="campo inválido: " + erro), 400
+        db.commit()
+        return jsonify(ok=True)
+
+
+@app.get("/api/minha/conversa/<int:cid>")
+@exige_empresa
+def minha_conversa(cid):
+    with SessionLocal() as db:
+        c = db.get(Conversa, cid)
+        if not c or c.empresa_id != g.empresa_id:   # nunca mostra conversas de outra empresa
+            return jsonify(erro="conversa não encontrada"), 404
+        msgs = db.query(Mensagem).filter_by(conversa_id=c.id).order_by(Mensagem.id).limit(300).all()
+        return jsonify(mensagens=[{"remetente": m.remetente, "conteudo": m.conteudo, "quando": iso_utc(m.data_hora)} for m in msgs])
 
 
 # ---------- Chat web (público) ----------
@@ -948,7 +1182,7 @@ def erro_geral(e):
 def cabecalhos(r):
     r.headers.setdefault("X-Content-Type-Options", "nosniff")
     r.headers.setdefault("Referrer-Policy", "no-referrer")
-    if request.path.startswith(("/painel", "/agente")):
+    if request.path.startswith(("/painel", "/agente", "/minha-empresa")):
         r.headers["X-Frame-Options"] = "DENY"     # o painel não pode ser metido num iframe
         r.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
     if request.path.startswith(("/api/", "/chat/")):
