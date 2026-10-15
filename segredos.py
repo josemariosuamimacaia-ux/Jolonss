@@ -1,7 +1,10 @@
 """Cifra os tokens guardados na base de dados (token do WhatsApp, segredo das integrações).
 
 Define ENCRYPTION_KEY (qualquer texto longo e secreto). Sem ela, os valores ficam em texto simples
-(como na versão 1) e o servidor avisa no log. Se mudares a chave, os tokens antigos deixam de abrir."""
+(como na versão 1) e o servidor avisa no log de forma bem visível. Se mudares a chave, os tokens antigos deixam de abrir.
+
+Para gerar uma chave forte: python -c "import secrets; print(secrets.token_urlsafe(48))"
+"""
 import base64
 import hashlib
 import logging
@@ -31,7 +34,14 @@ def cifrar(valor):
     f = _f()
     if f is None:
         if not _avisou:
-            log.warning("ENCRYPTION_KEY não definida: tokens guardados em texto simples")
+            log.warning(
+                "============================================================\n"
+                "  ATENÇÃO: ENCRYPTION_KEY não está definida.\n"
+                "  Tokens do WhatsApp e segredos de integração ficam em texto simples.\n"
+                "  Define ENCRYPTION_KEY no Render (Environment) antes de produção.\n"
+                "  Gera com: python -c \"import secrets; print(secrets.token_urlsafe(48))\"\n"
+                "============================================================"
+            )
             _avisou = True
         return valor
     return _PREFIXO + f.encrypt(valor.encode()).decode()
@@ -42,7 +52,7 @@ def decifrar(valor):
         return valor or ""   # valor antigo, sem cifra
     f = _f()
     if f is None:
-        log.error("Há tokens cifrados mas falta ENCRYPTION_KEY")
+        log.error("Há tokens cifrados mas falta ENCRYPTION_KEY — não é possível ler os tokens")
         return ""
     try:
         return f.decrypt(valor[len(_PREFIXO):].encode()).decode()

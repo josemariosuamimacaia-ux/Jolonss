@@ -88,6 +88,8 @@ class Empresa(Base):
     integracao_segredo: Mapped[str | None] = mapped_column(Text, nullable=True)
     plano_ate: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # fim do mês pago (vazio = sem prazo)
     chave_hash: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)       # chave de acesso do portal da empresa
+    # Retenção de dados em dias (None = sem apagar automático; empresa pode apagar manualmente)
+    retencao_dias: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Conversa(Base):
@@ -103,6 +105,8 @@ class Conversa(Base):
     contacto: Mapped[str | None] = mapped_column(String(120), nullable=True)  # telefone/email do cliente
     departamento_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # para onde a IA a encaminhou
     agente_id: Mapped[int | None] = mapped_column(Integer, nullable=True)        # atendente humano que a assumiu
+    # Consentimento: regista quando o cliente continuou a conversa (primeira mensagem = aceitou)
+    consentiu_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     mensagens: Mapped[list["Mensagem"]] = relationship(back_populates="conversa")
 
 
@@ -175,6 +179,19 @@ class Ticket(Base):
     assunto: Mapped[str] = mapped_column(Text)
     estado: Mapped[str] = mapped_column(String(10), default="aberto", index=True)  # 'aberto' ou 'fechado'
     criado: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=agora)
+
+
+class Auditoria(Base):
+    """Registo de ações importantes (quem fez o quê e quando). Serve para confiança e para provar isolamento."""
+    __tablename__ = "auditoria"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    quando: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=agora, index=True)
+    empresa_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)  # None = ação do dono MacTech
+    ator: Mapped[str] = mapped_column(String(40))          # 'admin', 'empresa', 'agente', 'sistema'
+    ator_id: Mapped[str | None] = mapped_column(String(80), nullable=True)  # id ou nome curto
+    acao: Mapped[str] = mapped_column(String(60))          # 'ver_conversa', 'apagar_cliente', 'responder', ...
+    detalhe: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
 
 
 def descrever_erro_db(e) -> str:
