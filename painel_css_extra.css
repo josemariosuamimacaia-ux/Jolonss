@@ -1,0 +1,10 @@
+/* Adiciona isto no final do "painel.css" dentro de ASSETS em assets.py
+   Melhora os botões do portal da empresa (Ver conversa / Apagar dados) */
+
+.row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center}
+.btn{background:var(--acc);color:var(--accT);border:0;border-radius:999px;padding:8px 14px;font:600 13px system-ui,sans-serif;cursor:pointer}
+.btn.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.btn.danger{background:transparent;color:#c0392b;border:1px solid #e74c3c}
+.btn.danger:hover{background:#fff5f5}
+.item{border-top:1px solid var(--line);padding:12px 0}
+.item .row{margin-top:6px}
