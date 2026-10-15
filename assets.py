@@ -168,6 +168,10 @@ input[type=checkbox]{width:auto}
 .badge{display:inline-block;border-radius:999px;padding:1px 10px;font-size:12px;font-weight:600;background:var(--acc);color:var(--accT)}
 .badge.off{background:var(--off);color:var(--ink)}
 a{color:var(--acc)}
+
+.row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center}
+.btn.danger{background:transparent;color:#c0392b;border:1px solid #e74c3c}
+.btn.danger:hover{background:#fff5f5}
 ''',
     ),
     "painel.html": (
@@ -633,13 +637,28 @@ ASSETS["minha.js"] = ("application/javascript; charset=utf-8", r'''(function () 
       var C = $('cv'); C.textContent = '';
       if (!r.conversas.length) C.appendChild(h('p', 'msg', 'Ainda sem conversas.'));
       r.conversas.forEach(function (c) {
-        var d = h('div', 'item'); d.style.cursor = 'pointer';
+        var d = h('div', 'item');
         d.appendChild(h('b', null, c.canal + (c.contacto ? ' · ' + c.contacto : '') + (c.humano ? ' · à espera de pessoa' : '')));
         d.appendChild(h('p', 'msg', c.ultima || ''));
-        d.onclick = function () { api('GET', '/api/minha/conversa/' + c.id).then(function (j) {
-          var T = $('tr'); T.textContent = '';
-          j.mensagens.forEach(function (m) { T.appendChild(h('p', 'msg', (m.remetente === 'user' ? 'Cliente: ' : m.remetente === 'human' ? 'Equipa: ' : 'IA: ') + m.conteudo)); });
-          T.scrollIntoView(); }).catch(function (x) { alert(x.message); }); };
+        var row = h('div', 'row');
+        var bVer = h('button', 'btn alt', 'Ver conversa'); bVer.type = 'button';
+        bVer.onclick = function () {
+          api('GET', '/api/minha/conversa/' + c.id).then(function (j) {
+            var T = $('tr'); T.textContent = '';
+            j.mensagens.forEach(function (m) {
+              T.appendChild(h('p', 'msg', (m.remetente === 'user' ? 'Cliente: ' : m.remetente === 'human' ? 'Equipa: ' : 'IA: ') + m.conteudo));
+            });
+            T.scrollIntoView();
+          }).catch(function (x) { alert(x.message); });
+        };
+        var bAp = h('button', 'btn danger', 'Apagar dados'); bAp.type = 'button';
+        bAp.onclick = function () {
+          if (!confirm('Apagar todas as mensagens e o contacto deste cliente?\nEsta ação não pode ser desfeita.')) return;
+          api('POST', '/api/minha/apagar-cliente', { conversa_id: c.id })
+            .then(function () { carregar(); })
+            .catch(function (x) { alert(x.message); });
+        };
+        row.appendChild(bVer); row.appendChild(bAp); d.appendChild(row);
         C.appendChild(d);
       });
       var S = $('sr'); S.textContent = '';
