@@ -41,17 +41,20 @@ TERMOS = """MODELO DE TERMOS (o dono deve rever e adaptar com um advogado antes 
 
 # ---------- páginas ----------
 BASE_CSS = """<style>
-body{margin:0;background:#e9f0ec;color:#10201e;font:16px/1.5 system-ui,sans-serif;padding:20px}
-@media(prefers-color-scheme:dark){body{background:#0d1917;color:#e6f1ed}.card,input,textarea{background:#16272b!important;color:#e6f1ed!important;border-color:#27413d!important}}
-main{max-width:560px;margin:0 auto}h1{font-size:40px;margin:8px 0}h1 span{color:#128c4a}p{color:#506560}
-.card{background:#fff;border:1px solid #c9d8d1;border-radius:14px;padding:14px;margin:12px 0}
-.btn{display:block;width:100%;box-sizing:border-box;margin:10px 0;background:#128c4a;color:#fff;border:0;border-radius:999px;padding:14px 20px;font:600 17px system-ui;text-align:center;text-decoration:none;cursor:pointer}
-.btn.alt{background:transparent;color:#128c4a;border:2px solid #128c4a}
-label{display:block;margin-top:10px;font-weight:600}input,textarea{width:100%;box-sizing:border-box;border:1px solid #c9d8d1;border-radius:10px;padding:10px;font:16px system-ui}
-.msg{min-height:1.4em}.erro{color:#b3261e}.ok{color:#128c4a;font-weight:600}pre{white-space:pre-wrap;font:14px/1.45 system-ui;margin:0}
-.item{display:block;text-decoration:none;color:inherit}.item b{font-size:18px}
+body{margin:0;background:#f7f9f8;color:#142824;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;padding:20px}
+@media(prefers-color-scheme:dark){body{background:#0b1413;color:#e9f4f0}.card,input,textarea{background:#13211f!important;color:#e9f4f0!important;border-color:#2c433e!important}}
+main{max-width:560px;margin:0 auto}h1{font-size:40px;margin:8px 0;font-weight:800;letter-spacing:-.4px}h1 span{color:#0e8a42}p{color:#5a726b}
+.card{background:#fff;border:1px solid #e0e8e4;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 2px 8px rgba(0,0,0,.05)}
+.btn{display:block;width:100%;box-sizing:border-box;margin:10px 0;background:#0e8a42;color:#fff;border:0;border-radius:10px;padding:14px 20px;font:600 16.5px system-ui;text-align:center;text-decoration:none;cursor:pointer;transition:background .15s}
+.btn:hover{background:#0b6e35}
+.btn.alt{background:transparent;color:#0e8a42;border:2px solid #0e8a42}
+.btn.alt:hover{background:#f0faf4}
+label{display:block;margin-top:12px;font-weight:600;font-size:14.5px}input,textarea{width:100%;box-sizing:border-box;border:1.5px solid #e0e8e4;border-radius:8px;padding:11px;font:16px system-ui;background:#fff;color:#142824;transition:border-color .15s}
+input:focus,textarea:focus{outline:none;border-color:#0e8a42;box-shadow:0 0 0 3px rgba(14,138,66,.14)}
+.msg{min-height:1.4em}.erro{color:#b3261e}.ok{color:#0e8a42;font-weight:600}pre{white-space:pre-wrap;font:14px/1.45 system-ui;margin:0}
+.item{display:block;text-decoration:none;color:inherit;transition:box-shadow .15s}.item:hover{box-shadow:0 3px 12px rgba(0,0,0,.08)}.item b{font-size:18px}
 .h{position:absolute;left:-9999px}
-</style>"""
+</style>
 
 INICIO = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>MacTech</title>""" + BASE_CSS + """</head><body><main>
