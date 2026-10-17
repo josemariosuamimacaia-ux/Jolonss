@@ -41,25 +41,23 @@ TERMOS = """MODELO DE TERMOS (o dono deve rever e adaptar com um advogado antes 
 
 # ---------- páginas ----------
 BASE_CSS = """<style>
-body{margin:0;background:#f7f9f8;color:#142824;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;padding:20px}
-@media(prefers-color-scheme:dark){body{background:#0b1413;color:#e9f4f0}.card,input,textarea{background:#13211f!important;color:#e9f4f0!important;border-color:#2c433e!important}}
-main{max-width:560px;margin:0 auto}h1{font-size:40px;margin:8px 0;font-weight:800;letter-spacing:-.4px}h1 span{color:#0e8a42}p{color:#5a726b}
-.card{background:#fff;border:1px solid #e0e8e4;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 2px 8px rgba(0,0,0,.05)}
-.btn{display:block;width:100%;box-sizing:border-box;margin:10px 0;background:#0e8a42;color:#fff;border:0;border-radius:10px;padding:14px 20px;font:600 16.5px system-ui;text-align:center;text-decoration:none;cursor:pointer;transition:background .15s}
-.btn:hover{background:#0b6e35}
-.btn.alt{background:transparent;color:#0e8a42;border:2px solid #0e8a42}
-.btn.alt:hover{background:#f0faf4}
-label{display:block;margin-top:12px;font-weight:600;font-size:14.5px}input,textarea{width:100%;box-sizing:border-box;border:1.5px solid #e0e8e4;border-radius:8px;padding:11px;font:16px system-ui;background:#fff;color:#142824;transition:border-color .15s}
-input:focus,textarea:focus{outline:none;border-color:#0e8a42;box-shadow:0 0 0 3px rgba(14,138,66,.14)}
-.msg{min-height:1.4em}.erro{color:#b3261e}.ok{color:#0e8a42;font-weight:600}pre{white-space:pre-wrap;font:14px/1.45 system-ui;margin:0}
-.item{display:block;text-decoration:none;color:inherit;transition:box-shadow .15s}.item:hover{box-shadow:0 3px 12px rgba(0,0,0,.08)}.item b{font-size:18px}
+body{margin:0;background:#e4e9f2;color:#0c1a2e;font:16px/1.5 system-ui,sans-serif;padding:20px}
+main{max-width:560px;margin:0 auto}h1{font-size:40px;margin:8px 0}h1 span{color:#9a7220}p{color:#55647f}
+.card{background:#fff;border:1px solid #d5dce9;border-radius:14px;padding:14px;margin:12px 0}
+.btn{display:block;width:100%;box-sizing:border-box;margin:10px 0;background:#14396b;color:#fff;border:0;border-radius:999px;padding:14px 20px;font:600 17px system-ui;text-align:center;text-decoration:none;cursor:pointer}
+.btn.alt{background:transparent;color:#14396b;border:2px solid #14396b}
+label{display:block;margin-top:10px;font-weight:600}input,textarea{width:100%;box-sizing:border-box;border:1px solid #d5dce9;border-radius:10px;padding:10px;font:16px system-ui}
+.msg{min-height:1.4em}.erro{color:#b3261e}.ok{color:#128c4a;font-weight:600}pre{white-space:pre-wrap;font:14px/1.45 system-ui;margin:0}
+.item{display:block;text-decoration:none;color:inherit}.item b{font-size:18px}
 .h{position:absolute;left:-9999px}
-</style>
+.marca{text-align:center;margin:8px 0 20px}.marca h1{margin:12px 0 4px}.marca .logo{width:112px;height:112px;border-radius:50%;box-shadow:0 0 0 3px #d4ac52}
+@media(prefers-color-scheme:dark){body{background:#03070d;color:#e8eef8}.card,input,textarea{background:#101e34!important;color:#e8eef8!important;border-color:#1f3354!important}h1 span{color:#e0b85c}p{color:#93a3bf}.btn{background:#e0b85c;color:#0b1b33}.btn.alt{background:transparent;color:#e0b85c;border-color:#e0b85c}.marca .logo{box-shadow:0 0 0 3px #e0b85c}}
+</style><link rel="icon" href="/static/logo.svg">"""
 
 INICIO = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>MacTech</title>""" + BASE_CSS + """</head><body><main>
-<h1>Mac<span>Tech</span></h1>
-<p>Assistentes de atendimento com IA para empresas.</p>
+<div class="marca"><img class="logo" src="/static/logo.svg" alt="MacTech" width="112" height="112"><h1>Mac<span>Tech</span></h1>
+<p>Assistentes de atendimento com IA para empresas.</p></div>
 <a class="btn" href="/clientes">Sou cliente: quero fazer perguntas</a>
 <a class="btn alt" href="/empresas">Sou uma empresa: quero registar-me</a>
 <a class="btn alt" href="/minha-empresa">Já sou empresa: entrar</a>

@@ -4,10 +4,11 @@ PAGINA = """<!DOCTYPE html>
 <html lang="pt"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{{ nome }} — atendimento</title>
-<link rel="stylesheet" href="/static/chat.css"></head><body>
-<header><div class="dot">{{ nome[:1] }}</div><div><b>{{ nome }}</b><small>assistente com IA</small></div></header>
+<meta name="theme-color" content="#0b1b33"><link rel="icon" href="/static/logo.svg"><link rel="stylesheet" href="/static/chat.css"></head><body>
+<header><img class="logo" src="/static/logo.svg" alt="MacTech" width="48" height="48"><div><b>{{ nome }}</b><small>Assistente virtual · sempre disponível</small></div><span class="tag">IA</span></header>
+<div class="faixa"><span>Informação da própria empresa</span><span>Respostas imediatas</span><span>Assistente de IA identificado</span></div>
 <main id="log" role="log" aria-live="polite"></main>
 <form id="f"><input id="t" maxlength="1000" placeholder="Escreve a tua mensagem" autocomplete="off" aria-label="Mensagem"><button type="submit">Enviar</button></form>
-<footer>Atendimento automático com IA · as conversas são guardadas para melhorar o serviço · MacTech</footer>
+<footer><img class="logo-mini" src="/static/logo.svg" alt="" width="16" height="16">Atendimento automático com IA · as conversas são guardadas para melhorar o serviço · MacTech</footer>
 <script type="application/json" id="cfg">{{ cfg|tojson }}</script>
 <script src="/static/chat.js"></script></body></html>"""

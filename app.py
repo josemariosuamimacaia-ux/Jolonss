@@ -468,8 +468,8 @@ def receber_webhook():
 # ---------- Páginas ----------
 PAGINA_404 = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Não encontrado</title>
-<link rel="stylesheet" href="/static/style.css"></head><body><main>
-<h1>Mac<span>Tech</span></h1><p>Esta página não existe.</p><p><a class="btn" href="/">Voltar ao início</a></p>
+<link rel="icon" href="/static/logo.svg"><link rel="stylesheet" href="/static/style.css"></head><body><main>
+<img class="logo" src="/static/logo.svg" alt="MacTech" width="96" height="96"><h1>Mac<span>Tech</span></h1><p>Esta página não existe.</p><p><a class="btn" href="/">Voltar ao início</a></p>
 </main></body></html>"""
 
 
