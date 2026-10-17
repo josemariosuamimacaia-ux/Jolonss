@@ -974,7 +974,7 @@ def minha_resumo():
                 .filter(Conversa.empresa_id == e.id, Mensagem.sem_resposta.is_(True))
                 .order_by(Mensagem.id.desc()).limit(20))]
         return jsonify(
-            nome=e.nome, estado=estado_de(e), ativa=empresa_ativa(e), system_prompt=e.system_prompt,
+            nome=e.nome, logo=publico.logo_versao(e.id) or None, estado=estado_de(e), ativa=empresa_ativa(e), system_prompt=e.system_prompt,
             humano_ativo=e.humano_ativo is not False, chat_url=f"/c/{e.slug}" if e.slug else None,
             valido_ate=iso_utc(e.plano_ate if estado_de(e) == "ativo" else e.teste_ate),
             semana={"pessoas": pessoas, "mensagens": contar(remetente="user"), "respostas_ia": contar(remetente="assistant"),
@@ -1013,7 +1013,7 @@ def pagina_chat(slug):
         e = db.query(Empresa).filter_by(slug=slug).one_or_none()
         if not e:
             return PAGINA_404, 404
-        return render_template_string(PAGINA, nome=e.nome, cfg={"slug": e.slug, "nome": e.nome})
+        return render_template_string(PAGINA, nome=e.nome, cfg={"slug": e.slug, "nome": e.nome, "logo": publico.logo_versao(e.id)})
 
 
 @app.post("/chat/<slug>/mensagem")
@@ -1191,7 +1191,7 @@ def cabecalhos(r):
 
 
 nivel4.registar(app, exige_admin, limite_excedido, iso_utc, enviar_humano, texto_valido)
-publico.registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug)
+publico.registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug, exige_empresa)
 
 if __name__ == "__main__":
     porta = int(os.environ.get("PORT", 3000))   # o Render define PORT
