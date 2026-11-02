@@ -27,12 +27,13 @@ from werkzeug.exceptions import HTTPException
 import ferramentas
 import ia
 import nivel4
+import planos
 import publico
 import whatsapp
 from assets import ASSETS
 from chat_page import PAGINA
 from config import cfg
-from models import (URL_ERRO, URL_INVALIDA, Conversa, Departamento, Empresa, Encomenda, Mensagem, Produto, SessionLocal,
+from models import (URL_ERRO, URL_INVALIDA, Base, Conversa, Departamento, Empresa, Encomenda, Mensagem, Produto, SessionLocal,
                     Ticket, agora, descrever_erro_db, init_db)
 from segredos import cifrar, decifrar, nova_chave_acesso
 
@@ -43,8 +44,23 @@ app = Flask(__name__, static_folder=None)   # os ficheiros do site vêm de asset
 if cfg.trust_proxy:   # atrás de um proxy, lê o IP real do visitante
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
-VERSAO = "2026-10-08-g-v5"   # mostra qual versão do código está mesmo ativa no Render
+VERSAO = "2026-11-01-manutencao"   # mostra qual versão do código está mesmo ativa no Render
 _db = {"ok": False, "tentativa": 0.0, "erro": ""}
+
+
+def dar_prazo_a_contas_antigas():
+    """Contas 'ativo' antigas sem data de fim nunca eram cortadas. Ganham 30 dias a contar de hoje, uma só vez;
+    depois disso só continuam se o dono carregar em 'Pagou: ativar/renovar'."""
+    try:
+        with SessionLocal() as db:
+            antigas = db.query(Empresa).filter(Empresa.estado == "ativo", Empresa.plano_ate.is_(None)).all()
+            for e in antigas:
+                e.plano_ate = agora() + timedelta(days=30)
+            if antigas:
+                db.commit()
+                log.warning("[ATENÇÃO] %s conta(s) ativa(s) sem data de fim ganharam 30 dias: %s", len(antigas), ", ".join(e.nome for e in antigas))
+    except Exception:
+        log.exception("Não foi possível dar prazo às contas antigas")
 
 
 def preparar_db():
@@ -58,6 +74,8 @@ def preparar_db():
         init_db()
         _db["ok"] = True
         _db["erro"] = ""
+        planos.criar_tabelas()
+        dar_prazo_a_contas_antigas()
     except Exception as e:
         _db["ok"] = False
         _db["erro"] = descrever_erro_db(e)
@@ -76,6 +94,10 @@ MSG_INDISPONIVEL = ("Este atendimento automático está temporariamente indispon
 MSG_ERRO = "Desculpa, tive um problema técnico. Tenta novamente daqui a pouco."
 MSG_LIMITE = ("Recebemos muitas mensagens hoje e o atendimento automático voltou a ficar ocupado. "
               "Tenta de novo mais tarde ou contacte a empresa diretamente.")
+MSG_LIMITE_MES = ("O limite de mensagens do atendimento automático deste mês foi atingido. "
+                  "Por favor, contacte a empresa diretamente.")
+MSG_SEM_WHATSAPP = ("O atendimento por WhatsApp não está disponível para esta empresa neste momento. "
+                    "Por favor, use o chat do site ou contacte a empresa diretamente.")
 MSG_SO_TEXTO = "De momento só consigo ler mensagens de texto, voz e imagens. Podes escrever a tua pergunta?"
 MSG_TRANSICAO_ZANGADO = ("Lamento muito o que aconteceu. Vou passar a conversa a uma pessoa da equipa "
                          "para resolver isto contigo. Já te respondem por aqui.")
@@ -235,12 +257,39 @@ def limite_diario_atingido(db, empresa) -> bool:
     return n > cfg.max_dia_empresa
 
 
+def mensagens_do_mes(db, empresa_id) -> int:
+    """Mensagens de clientes desde o início do mês (é o que o limite do pacote conta)."""
+    return (db.query(func.count(Mensagem.id)).join(Conversa, Mensagem.conversa_id == Conversa.id)
+            .filter(Conversa.empresa_id == empresa_id, Mensagem.remetente == "user",
+                    Mensagem.data_hora >= planos.inicio_do_mes()).scalar())
+
+
+def limite_mensal_atingido(db, empresa) -> bool:
+    """Limite do pacote. Empresas sem pacote (contas antigas) não têm limite mensal."""
+    limite = planos.limite_de(planos.plano_de(db, empresa.id))
+    return bool(limite) and mensagens_do_mes(db, empresa.id) > limite
+
+
+def humano_sem_resposta(db, conversa) -> bool:
+    """Uma pessoa assumiu a conversa mas ninguém respondeu há muito tempo: a IA retoma para o cliente não ficar abandonado."""
+    ultima = (db.query(Mensagem.data_hora).filter(Mensagem.conversa_id == conversa.id, Mensagem.remetente != "user")
+              .order_by(Mensagem.id.desc()).first())
+    if not ultima or not ultima[0]:
+        return False
+    quando = ultima[0] if ultima[0].tzinfo else ultima[0].replace(tzinfo=timezone.utc)
+    return agora() - quando > timedelta(hours=planos.HORAS_ATE_IA_RETOMAR)
+
+
 def preparar(db, empresa, conversa, texto):
     """Decide o que fazer com a mensagem. Devolve ('fixo', texto) para respostas sem IA, ('humano', None)
     se uma pessoa assumiu, ou ('ia', historico). Faz commit antes de a IA ser chamada, para não manter a
     base de dados bloqueada durante os segundos que a IA demora a responder."""
     if conversa.humano_assumiu:
-        return "humano", None
+        if not humano_sem_resposta(db, conversa):
+            return "humano", None
+        conversa.humano_assumiu = False   # ninguém respondeu: a IA volta a atender
+        log.warning("[ATENÇÃO] %s: ninguém respondeu ao cliente %s há mais de %s h, a IA retomou a conversa",
+                    empresa.nome, conversa.cliente_numero, planos.HORAS_ATE_IA_RETOMAR)
     if not empresa_ativa(empresa):
         log.warning("[ATENÇÃO] %s: teste terminou ou conta suspensa, bot desligado", empresa.nome)
         return "fixo", MSG_INDISPONIVEL
@@ -256,6 +305,9 @@ def preparar(db, empresa, conversa, texto):
     if limite_diario_atingido(db, empresa):
         log.warning("[ATENÇÃO] %s: limite diário de mensagens atingido", empresa.nome)
         return "fixo", MSG_LIMITE
+    if limite_mensal_atingido(db, empresa):
+        log.warning("[ATENÇÃO] %s: limite mensal do pacote atingido", empresa.nome)
+        return "fixo", MSG_LIMITE_MES
     hist = historico_ia(db, conversa)
     db.commit()   # liberta a base de dados antes da chamada (lenta) à IA
     return "ia", hist
@@ -265,7 +317,7 @@ def montar_ferramentas(db, empresa, conversa, hist):
     """Nível 4: prompt com departamentos, ferramentas ativas e contexto de quem fala.
     Devolve (prompt, esquemas, executar). esquemas vazio = empresa sem ferramentas (resposta normal)."""
     deps = db.query(Departamento).filter_by(empresa_id=empresa.id).order_by(Departamento.id).all()
-    esquemas = ferramentas.esquemas(empresa, deps)
+    esquemas = ferramentas.esquemas(empresa, deps) if planos.permite(db, empresa.id, "ferramentas") else []   # o pacote decide
     prompt = empresa.system_prompt + (ferramentas.bloco_departamentos(deps) if esquemas else "")
     if not esquemas:
         return prompt, [], None
@@ -284,6 +336,8 @@ def decidir_resposta(db, empresa, conversa, texto, msg_user):
         return None
     if tipo == "fixo":
         return dado
+    empresa_id = empresa.id
+    ia.uso_reset()
     try:
         prompt, esq, executar = montar_ferramentas(db, empresa, conversa, dado)
         resposta, sem = ia.responder(prompt, dado, esq, executar)
@@ -295,6 +349,8 @@ def decidir_resposta(db, empresa, conversa, texto, msg_user):
     except Exception as erro:
         log.error("Erro na IA: %s | %s", erro, ia.explicar_erro(str(erro)))
         return MSG_ERRO
+    finally:
+        planos.registar_uso(empresa_id, *ia.uso_ler())   # para calcular o custo da IA por empresa
 
 
 # ---------- WhatsApp ----------
@@ -366,6 +422,10 @@ def _processar(pnid: str, msg: dict):
                     log.warning("Webhook para número desconhecido: %s", pnid)
                     return
                 token = decifrar(empresa.wa_access_token)
+                if not planos.permite(db, empresa.id, "whatsapp"):   # o pacote não inclui WhatsApp
+                    log.warning("[ATENÇÃO] %s: o pacote não inclui WhatsApp", empresa.nome)
+                    whatsapp.enviar_texto(token, pnid, numero, MSG_SEM_WHATSAPP)
+                    return
                 conversa = obter_conversa(db, pnid, numero, empresa.id)
 
             if tipo in ("audio", "image"):   # voz e fotos: o Gemini lê-as e a conversa segue como texto
@@ -392,7 +452,7 @@ def _processar(pnid: str, msg: dict):
             if hub and empresa is None:
                 # Triagem: perceber de que empresa o cliente quer ser atendido
                 empresas = [e for e in db.query(Empresa).filter(Empresa.no_hub.isnot(False)).order_by(Empresa.id).all()
-                            if empresa_ativa(e)]
+                            if empresa_ativa(e) and planos.permite(db, e.id, "whatsapp")]
                 if not empresas:
                     resposta = "De momento não há empresas disponíveis neste número."
                 else:
@@ -561,7 +621,10 @@ def gerar_slug(db, nome):
 @exige_admin
 def listar_empresas():
     with SessionLocal() as db:
+        mp = planos.mapa_planos(db)
         return jsonify(empresas=[{
+            "plano": mp.get(e.id, (None, None))[0], "arquivada": bool(mp.get(e.id, (None, None))[1]),
+            "sem_prazo": estado_de(e) == "ativo" and not e.plano_ate,
             "id": e.id, "nome": e.nome, "slug": e.slug, "estado": estado_de(e), "ativa": empresa_ativa(e),
             "teste_ate": iso_utc(e.teste_ate), "plano_ate": iso_utc(e.plano_ate), "tem_chave": bool(e.chave_hash),
             "humano_ativo": e.humano_ativo is not False,
@@ -595,6 +658,10 @@ def criar_empresa():
             log.exception("Não foi possível registar a empresa")
             return jsonify(erro="Não foi possível registar: já existe esse número de WhatsApp, "
                                 "ou a base de dados é de uma versão antiga (apaga-a e deixa o servidor recriá-la)."), 409
+        plano = planos.plano_valido(d.get("plano"))
+        if plano:
+            planos.definir_plano(db, empresa.id, plano)
+            db.commit()
         return jsonify(id=empresa.id, nome=empresa.nome, wa_phone_number_id=empresa.wa_phone_number_id,
                        no_hub=empresa.no_hub, estado=empresa.estado, slug=empresa.slug,
                        chat_url=f"/c/{empresa.slug}", teste_ate=iso_utc(empresa.teste_ate)), 201
@@ -613,6 +680,8 @@ def mudar_estado(empresa_id):
         if not e:
             return jsonify(erro="empresa não encontrada"), 404
         e.estado = estado
+        if estado in ("ativo", "teste"):
+            planos.desarquivar(db, empresa_id)
         if estado == "ativo":   # cada pagamento confirmado soma 30 dias por mês (acumula se renovar antes do fim)
             try:
                 meses = max(1, min(int(d.get("meses", 1)), 12))
@@ -673,6 +742,129 @@ def estatisticas():
 
 def _canal(c):
     return "chat web" if c.phone_number_id == "web" else "WhatsApp"
+
+# ---------- Manutenção: pacotes, análise, arquivar e eliminar empresas ----------
+@app.get("/api/pacotes")
+@exige_admin
+def listar_pacotes():
+    return jsonify(pacotes=[{"chave": k, **p} for k, p in planos.PLANOS.items()])
+
+
+@app.put("/api/empresas/<int:empresa_id>/plano")
+@exige_admin
+def mudar_plano(empresa_id):
+    """Corpo: {"plano": "basico|profissional|empresarial"} ou {"plano": ""} para tirar o pacote (sem limite)."""
+    d = request.get_json(silent=True) or {}
+    bruto = d.get("plano")
+    plano = planos.plano_valido(bruto)
+    if bruto and not plano:
+        return jsonify(erro="pacote inválido"), 400
+    with SessionLocal() as db:
+        if not db.get(Empresa, empresa_id):
+            return jsonify(erro="empresa não encontrada"), 404
+        planos.definir_plano(db, empresa_id, plano)
+        db.commit()
+    return jsonify(ok=True, plano=plano)
+
+
+@app.post("/api/empresas/<int:empresa_id>/arquivar")
+@exige_admin
+def arquivar_empresa(empresa_id):
+    """Desliga a empresa e esconde-a das análises. Os dados ficam guardados até a eliminares."""
+    with SessionLocal() as db:
+        e = db.get(Empresa, empresa_id)
+        if not e:
+            return jsonify(erro="empresa não encontrada"), 404
+        e.estado = "suspenso"
+        planos.arquivar(db, empresa_id)
+        db.commit()
+    return jsonify(ok=True, estado="suspenso", arquivada=True)
+
+
+@app.post("/api/empresas/<int:empresa_id>/restaurar")
+@exige_admin
+def restaurar_empresa(empresa_id):
+    """Tira do arquivo. Continua suspensa até carregares em 'Pagou: ativar/renovar' ou 'teste'."""
+    with SessionLocal() as db:
+        if not db.get(Empresa, empresa_id):
+            return jsonify(erro="empresa não encontrada"), 404
+        planos.desarquivar(db, empresa_id)
+        db.commit()
+    return jsonify(ok=True, arquivada=False)
+
+
+@app.delete("/api/empresas/<int:empresa_id>")
+@exige_admin
+def eliminar_empresa(empresa_id):
+    """Elimina para sempre uma empresa arquivada e tudo o que é dela. Corpo: {"confirmar": "<nome exato>"}.
+    Se algo falhar, nada é apagado."""
+    d = request.get_json(silent=True) or {}
+    with SessionLocal() as db:
+        e = db.get(Empresa, empresa_id)
+        if not e:
+            return jsonify(erro="empresa não encontrada"), 404
+        if not planos.arquivada_em(db, empresa_id):
+            return jsonify(erro="Arquiva a empresa primeiro."), 400
+        if str(d.get("confirmar") or "").strip() != e.nome:
+            return jsonify(erro="Para eliminar, escreve exatamente o nome da empresa."), 400
+        nome = e.nome
+        try:
+            apagadas = planos.eliminar_dados_empresa(db, Base.metadata, Empresa.__table__.name, empresa_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("Não foi possível eliminar a empresa")
+            return jsonify(erro="Não foi possível eliminar. A empresa continua arquivada e nada foi apagado."), 500
+    log.warning("[ATENÇÃO] Empresa eliminada: %s (%s)", nome, apagadas)
+    return jsonify(ok=True, apagadas=apagadas)
+
+
+@app.get("/api/analise")
+@exige_admin
+def analise():
+    """Por empresa, neste mês: pessoas, respostas da IA, custo da IA, receita e lucro. Mais os totais."""
+    inicio = planos.inicio_do_mes()
+    with SessionLocal() as db:
+        mp, mu = planos.mapa_planos(db), planos.mapa_uso(db)
+        logos = {i: v for i, v in db.query(publico.LogoEmpresa.empresa_id, publico.LogoEmpresa.versao).all()}
+        linhas = []
+        for e in db.query(Empresa).order_by(Empresa.id).all():
+            plano, arquivada = mp.get(e.id, (None, None))
+            if arquivada:
+                continue
+
+            def contar(remetente):
+                return (db.query(func.count(Mensagem.id)).join(Conversa, Mensagem.conversa_id == Conversa.id)
+                        .filter(Conversa.empresa_id == e.id, Mensagem.remetente == remetente,
+                                Mensagem.data_hora >= inicio).scalar())
+            pessoas = (db.query(func.count(func.distinct(Conversa.id))).join(Mensagem, Mensagem.conversa_id == Conversa.id)
+                       .filter(Conversa.empresa_id == e.id, Mensagem.remetente == "user",
+                               Mensagem.data_hora >= inicio).scalar())
+            mensagens, respostas_ia = contar("user"), contar("assistant")
+            chamadas, entrada, saida = mu.get(e.id, (0, 0, 0))
+            estado, ativa = estado_de(e), empresa_ativa(e)
+            custo = planos.custo_ia_kz(entrada, saida)
+            receita = planos.preco_de(plano) if (estado == "ativo" and ativa) else 0
+            limite = planos.limite_de(plano)
+            fim = e.plano_ate if estado == "ativo" else e.teste_ate
+            dias = None
+            if fim:
+                fim = fim if fim.tzinfo else fim.replace(tzinfo=timezone.utc)
+                dias = (fim - agora()).days
+            linhas.append({
+                "id": e.id, "nome": e.nome, "slug": e.slug, "chat_url": f"/c/{e.slug}" if e.slug else None,
+                "logo": logos.get(e.id), "estado": estado, "ativa": ativa,
+                "plano": plano, "plano_nome": planos.PLANOS[plano]["nome"] if plano in planos.PLANOS else None,
+                "pessoas": pessoas, "mensagens_clientes": mensagens, "respostas_ia": respostas_ia,
+                "chamadas_ia": chamadas, "tokens_entrada": entrada, "tokens_saida": saida,
+                "custo_ia_kz": round(custo, 2), "receita_kz": receita, "lucro_kz": round(receita - custo, 2),
+                "limite": limite, "estado_limite": planos.estado_do_limite(mensagens, limite),
+                "dias_para_fim": dias, "sem_prazo": estado == "ativo" and not e.plano_ate,
+                "whatsapp_fora_do_pacote": bool(e.wa_phone_number_id) and plano in planos.PLANOS
+                                           and not planos.PLANOS[plano]["whatsapp"],
+            })
+        return jsonify(mes=planos.mes_atual(), empresas=linhas, totais=planos.analisar(linhas))
+
 
 
 @app.get("/api/conversas")
@@ -787,6 +979,10 @@ def backup():
         for nome, (modelo, campos) in _BACKUP.items():
             saida["tabelas"][nome] = [{c: _valor_json(getattr(r, c)) for c in campos}
                                       for r in db.query(modelo).order_by(modelo.id).all()]
+        saida["tabelas"]["planos_empresa"] = [{"empresa_id": l.empresa_id, "plano": l.plano, "arquivada_em": _valor_json(l.arquivada_em)}
+                                              for l in db.query(planos.PlanoEmpresa).all()]
+        saida["tabelas"]["uso_ia"] = [{c: getattr(l, c) for c in ("empresa_id", "mes", "chamadas", "entrada", "saida")}
+                                      for l in db.query(planos.UsoIA).all()]
     return Response(json.dumps(saida, ensure_ascii=False, indent=1), mimetype="application/json",
                     headers={"Content-Disposition": f"attachment; filename=mactech_backup_{agora():%Y%m%d}.json"})
 
@@ -973,8 +1169,12 @@ def minha_resumo():
                (db.query(Mensagem).join(Conversa, Mensagem.conversa_id == Conversa.id)
                 .filter(Conversa.empresa_id == e.id, Mensagem.sem_resposta.is_(True))
                 .order_by(Mensagem.id.desc()).limit(20))]
+        plano = planos.plano_de(db, e.id)
+        usado = mensagens_do_mes(db, e.id)
+        pacote = {"nome": planos.PLANOS[plano]["nome"] if plano in planos.PLANOS else None, "usado": usado,
+                  "limite": planos.limite_de(plano), "estado_limite": planos.estado_do_limite(usado, planos.limite_de(plano))}
         return jsonify(
-            nome=e.nome, logo=publico.logo_versao(e.id) or None, estado=estado_de(e), ativa=empresa_ativa(e), system_prompt=e.system_prompt,
+            pacote=pacote, nome=e.nome, logo=publico.logo_versao(e.id) or None, estado=estado_de(e), ativa=empresa_ativa(e), system_prompt=e.system_prompt,
             humano_ativo=e.humano_ativo is not False, chat_url=f"/c/{e.slug}" if e.slug else None,
             valido_ate=iso_utc(e.plano_ate if estado_de(e) == "ativo" else e.teste_ate),
             semana={"pessoas": pessoas, "mensagens": contar(remetente="user"), "respostas_ia": contar(remetente="assistant"),
@@ -1081,10 +1281,11 @@ def chat_stream(slug):
             return jsonify(mensagens=novas, humano=bool(conversa.humano_assumiu))
         db.flush()
         prompt, esq, executar = montar_ferramentas(db, empresa, conversa, dado)
-        conversa_id, mu_id = conversa.id, mu.id
+        conversa_id, mu_id, empresa_id = conversa.id, mu.id, empresa.id
 
     def gerar():
         parcial, final, sem, guardado = "", None, False, False
+        ia.uso_reset()
         try:
             try:
                 if esq:   # nível 4: com ferramentas a resposta chega inteira (a IA consulta sistemas antes de responder)
@@ -1107,6 +1308,7 @@ def chat_stream(slug):
             if final is not None and parcial.strip() and final != parcial.strip():
                 yield _sse({"substituir": final})   # texto final limpo (ex.: resposta cortada na última frase)
         finally:
+            planos.registar_uso(empresa_id, *ia.uso_ler())   # custo da IA por empresa
             # corre mesmo que o cliente feche a página a meio: a conversa fica sempre completa na base de dados
             texto_guardar = (final if final is not None else parcial).strip()
             m = None
