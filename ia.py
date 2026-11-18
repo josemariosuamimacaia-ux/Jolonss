@@ -4,7 +4,6 @@ Se existir GROQ_API_KEY, uma IA de reserva (Groq) responde quando o Gemini falha
 import base64
 import json
 import logging
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -13,37 +12,6 @@ import requests
 from config import cfg
 
 log = logging.getLogger("mactech.ia")
-
-# Uso da IA (tokens lidos e escritos) por thread: o app.py faz uso_reset() antes e uso_ler() depois de cada resposta
-_uso = threading.local()
-
-
-def uso_reset():
-    _uso.entrada = 0
-    _uso.saida = 0
-
-
-def uso_ler() -> tuple:
-    """(tokens de entrada, tokens de saída) desde o último uso_reset() nesta thread."""
-    return getattr(_uso, "entrada", 0), getattr(_uso, "saida", 0)
-
-
-def _somar_uso(entrada, saida):
-    try:
-        _uso.entrada = getattr(_uso, "entrada", 0) + int(entrada or 0)
-        _uso.saida = getattr(_uso, "saida", 0) + int(saida or 0)
-    except (TypeError, ValueError):
-        pass
-
-
-def _somar_gemini(meta):
-    """usageMetadata do Gemini: tokens de entrada e de saída (a saída inclui o 'pensamento' da IA)."""
-    if not isinstance(meta, dict):
-        return
-    entrada = meta.get("promptTokenCount") or 0
-    total = meta.get("totalTokenCount") or 0
-    saida = max((meta.get("candidatesTokenCount") or 0) + (meta.get("thoughtsTokenCount") or 0), total - entrada)
-    _somar_uso(entrada, saida)
 
 BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 BASE_RESERVA = "https://api.groq.com/openai/v1/chat/completions"
@@ -157,9 +125,7 @@ def _pedir(system: str, contents: list, max_tokens: int = 500, ferramentas: list
             ultimo = f"sem ligação à IA: {e}"
         else:
             if r.status_code == 200:
-                dados = r.json()
-                _somar_gemini(dados.get("usageMetadata") if isinstance(dados, dict) else None)
-                return dados
+                return r.json()
             ultimo = f"A API da IA respondeu {r.status_code}: {r.text[:300]}"
             if r.status_code not in RETENTAR:
                 raise RuntimeError(ultimo)
@@ -189,10 +155,8 @@ def _reserva(system: str, historico: list, max_tokens: int = 500) -> tuple:
         else:
             if r.status_code == 200:
                 try:
-                    dados_r = r.json()
-                    escolha = dados_r["choices"][0]
+                    escolha = r.json()["choices"][0]
                     texto = (escolha.get("message") or {}).get("content") or ""
-                    _somar_uso((dados_r.get("usage") or {}).get("prompt_tokens"), (dados_r.get("usage") or {}).get("completion_tokens"))
                 except (ValueError, KeyError, IndexError):
                     raise RuntimeError("A reserva devolveu uma resposta que não percebi")
                 texto, sem = _limpar(texto)
@@ -323,7 +287,7 @@ def _stream_gemini(system_prompt: str, historico: list, max_tokens: int = 500):
     if r is None:
         raise RuntimeError(ultimo)
 
-    completo, enviado, truncado, motivo, meta_uso = "", 0, False, None, None
+    completo, enviado, truncado, motivo = "", 0, False, None
     try:
         for linha in r.iter_lines(decode_unicode=True):
             if not linha or not linha.startswith("data:"):
@@ -335,8 +299,6 @@ def _stream_gemini(system_prompt: str, historico: list, max_tokens: int = 500):
             if "error" in ev:
                 err = ev["error"] if isinstance(ev["error"], dict) else {}
                 raise RuntimeError(f"A API da IA respondeu {err.get('code', 503)}: {err.get('message', ev['error'])}")
-            if ev.get("usageMetadata"):
-                meta_uso = ev["usageMetadata"]   # o último vem com o total
             conteudo, fim = _candidato(ev)
             if fim:
                 motivo = fim
@@ -355,7 +317,6 @@ def _stream_gemini(system_prompt: str, historico: list, max_tokens: int = 500):
                     enviado = len(visivel)
     finally:
         r.close()
-    _somar_gemini(meta_uso)
     texto, sem = _limpar(completo)
     if truncado:
         texto = _cortar_frase(texto)

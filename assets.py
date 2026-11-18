@@ -289,8 +289,6 @@ input[type=checkbox]{width:auto}
 .badge{display:inline-block;border-radius:999px;padding:1px 10px;font-size:12px;font-weight:700;background:var(--acc);color:var(--accT)}
 .badge.off{background:var(--off);color:var(--ink)}
 a{color:var(--acc)}
-#painel.so-analise>section:not(#sec-analise),#painel.so-analise>.atalhos,#painel:not(.so-analise)>#sec-analise{display:none}
-.abas{margin:0 0 12px}.abas .btn{flex:1}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.btn{transition:none}}
 ''',
     ),
@@ -313,8 +311,6 @@ a{color:var(--acc)}
 <div id="painel" hidden>
 <div class="titulo"><h1>Painel do dono</h1><p>Gira empresas, pagamentos e conversas num só lugar.</p></div>
 <nav class="atalhos" aria-label="Secções"><a href="#sec-registar">Registar</a><a href="#sec-empresas">Empresas</a><a href="#sec-humanos">À espera de pessoa</a><a href="#sec-tickets">Tickets</a><a href="#sec-conversas">Conversas</a><a href="#sec-exportar">Exportar</a></nav>
-<div class="row abas"><button class="btn" id="v-cad" type="button">Cadastrar empresas</button><button class="btn alt" id="v-ana" type="button">Análise</button></div>
-<section class="card" id="sec-analise"><div class="sh"><span class="ic"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></span><div><h2>Análise do mês</h2><p class="desc">Quantas pessoas a IA atendeu em cada empresa, quanto custou e qual é o seu lucro.</p></div></div><div id="analise"><p class="msg">A carregar…</p></div></section>
 <section class="card" id="sec-registar"><div class="sh"><span class="ic"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span><div><h2>Registar empresa</h2><p class="desc">Crie uma empresa nova, defina o que o assistente sabe e, se quiser, envie o logótipo.</p></div></div>
 <details class="abre"><summary>Abrir formulário de registo</summary>
 <form id="fe">
@@ -328,7 +324,6 @@ a{color:var(--acc)}
 <label for="elo">Contactos e localização</label><input id="elo">
 <label for="epo">Garantia, entrega e pagamento</label><textarea id="epo" rows="2"></textarea>
 <label for="eex">Regras extra para o bot</label><textarea id="eex" rows="2"></textarea>
-<label for="ep">Pacote</label><select id="ep"><option value="">Sem pacote (sem limite)</option></select>
 <label class="chk"><input type="checkbox" id="eh" checked> A empresa tem equipa para atender pessoas</label>
 <div class="row"><button class="btn" type="submit">Registar empresa</button></div>
 <p id="me" class="msg"></p>
@@ -437,49 +432,7 @@ a{color:var(--acc)}
     }).catch(function () {});
   }
 
-  var PACOTES = [];
-  function kz(n) { return Math.round(n || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' Kz'; }
-  function carregarPacotes() {
-    api('GET', '/api/pacotes').then(function (j) {
-      PACOTES = j.pacotes || []; var ep = $('ep');
-      while (ep.options.length > 1) ep.remove(1);
-      PACOTES.forEach(function (p) { var o = h('option', null, p.nome + ' · ' + kz(p.preco_kz) + ' por mês'); o.value = p.chave; ep.appendChild(o); });
-    }).catch(function () {}).then(carregarEmpresas);
-  }
-  function vista(analise) {
-    $('painel').className = analise ? 'so-analise' : '';
-    $('v-cad').className = 'btn' + (analise ? ' alt' : ''); $('v-ana').className = 'btn' + (analise ? '' : ' alt');
-    if (analise) carregarAnalise();
-  }
-  $('v-cad').onclick = function () { vista(false); }; $('v-ana').onclick = function () { vista(true); };
-  function carregarAnalise() {
-    var A = $('analise');
-    api('GET', '/api/analise').then(function (j) {
-      A.textContent = ''; var t = j.totais;
-      [['Mês', j.mes], ['Empresas ativas', t.empresas_ativas], ['Respostas da IA', t.respostas_ia], ['Receita dos pacotes', kz(t.receita_kz)],
-       ['Custo da IA (estimado)', kz(t.custo_ia_kz)], ['Custo fixo (servidor)', kz(t.custo_fixo_kz)], ['Lucro', kz(t.lucro_kz) + ' (' + t.margem_pct + '%)']
-      ].forEach(function (l) { A.appendChild(h('p', 'msg', l[0] + ': ' + l[1])); });
-      if (!j.empresas.length) A.appendChild(h('p', 'msg', 'Ainda não há empresas.'));
-      j.empresas.forEach(function (e) {
-        var c = h('div', 'item'), cab = h('div', 'cab'), tt = h('div', 'cab-t');
-        cab.appendChild(avatar(e)); cab.appendChild(tt); c.appendChild(cab);
-        tt.appendChild(h('b', null, e.nome + ' '));
-        tt.appendChild(h('span', 'badge' + (e.ativa ? '' : ' off'), (e.plano_nome || 'sem pacote') + ' · ' + e.estado));
-        c.appendChild(h('p', 'msg', e.pessoas + ' pessoas · ' + e.mensagens_clientes + (e.limite ? ' de ' + e.limite : '') + ' mensagens · ' + e.respostas_ia + ' respostas da IA'));
-        c.appendChild(h('p', 'msg', 'Custo da IA ' + kz(e.custo_ia_kz) + ' · Receita ' + kz(e.receita_kz) + ' · Lucro ' + kz(e.lucro_kz)));
-        var av = [];
-        if (e.estado_limite === 'perto') av.push('perto do limite do pacote');
-        if (e.estado_limite === 'atingido') av.push('limite do pacote atingido: o bot já não responde');
-        if (e.sem_prazo) av.push('sem data de fim: renove para marcar um prazo');
-        if (e.whatsapp_fora_do_pacote) av.push('usa WhatsApp mas o pacote não inclui');
-        if (e.ativa && e.dias_para_fim !== null && e.dias_para_fim <= 3) av.push('acaba em ' + e.dias_para_fim + ' dia(s)');
-        av.forEach(function (x) { c.appendChild(h('span', 'badge off', x)); c.appendChild(document.createTextNode(' ')); });
-        A.appendChild(c);
-      });
-    }).catch(function (x) { A.textContent = x.message; });
-  }
-
-  function iniciar() { mostrar(true); carregarTickets(); carregarPacotes(); carregarHumanos(); carregarConversas(); carregarSemResposta(); clearInterval(tm); tm = setInterval(function () { carregarHumanos(); carregarTickets(); }, 15000); }
+  function iniciar() { mostrar(true); carregarTickets(); carregarEmpresas(); carregarHumanos(); carregarConversas(); carregarSemResposta(); clearInterval(tm); tm = setInterval(function () { carregarHumanos(); carregarTickets(); }, 15000); }
 
   $('fl').onsubmit = function (e) {
     e.preventDefault(); K = $('k').value.trim();
@@ -528,27 +481,6 @@ a{color:var(--acc)}
         lf.onchange = function () { MTLogo.ler(lf.files[0]).then(function (x) { return api('PUT', '/api/empresas/' + e.id + '/logo', { logo: x.url }); }).then(carregarEmpresas).catch(erro); };
         b.appendChild(lb); b.appendChild(lf);
         if (LG[e.id]) { var lr = h('button', 'btn alt', 'Remover logótipo'); lr.type = 'button'; lr.onclick = function () { api('DELETE', '/api/empresas/' + e.id + '/logo').then(carregarEmpresas).catch(erro); }; b.appendChild(lr); }
-        var ps = h('select'); ps.setAttribute('aria-label', 'Pacote de ' + e.nome);
-        var o0 = h('option', null, 'Sem pacote (sem limite)'); o0.value = ''; ps.appendChild(o0);
-        PACOTES.forEach(function (p) { var o = h('option', null, p.nome + ' · ' + kz(p.preco_kz)); o.value = p.chave; ps.appendChild(o); });
-        ps.value = e.plano || '';
-        ps.onchange = function () { api('PUT', '/api/empresas/' + e.id + '/plano', { plano: ps.value }).then(carregarEmpresas).catch(erro); };
-        c.appendChild(ps);
-        if (e.sem_prazo) c.appendChild(h('p', 'msg', 'Atenção: esta conta não tem data de fim. Carregue em «Pagou: ativar/renovar» para lhe dar um prazo.'));
-        if (e.arquivada) {
-          tt.appendChild(h('span', 'badge off', 'arquivada'));
-          var rs = h('button', 'btn alt', 'Restaurar'); rs.type = 'button';
-          rs.onclick = function () { api('POST', '/api/empresas/' + e.id + '/restaurar').then(carregarEmpresas).catch(erro); }; b.appendChild(rs);
-          var el = h('button', 'btn alt', 'Eliminar para sempre'); el.type = 'button';
-          el.onclick = function () {
-            var n = prompt('Isto apaga ' + e.nome + ' e todas as conversas, para sempre. Escreve exatamente o nome da empresa para confirmar:');
-            if (n === null) return;
-            api('DELETE', '/api/empresas/' + e.id, { confirmar: n }).then(carregarEmpresas).catch(erro);
-          }; b.appendChild(el);
-        } else {
-          var ar = h('button', 'btn alt', 'Arquivar'); ar.type = 'button';
-          ar.onclick = function () { if (confirm('Arquivar ' + e.nome + '? O bot desliga e a empresa sai da análise. Os dados ficam guardados.')) api('POST', '/api/empresas/' + e.id + '/arquivar').then(carregarEmpresas).catch(erro); }; b.appendChild(ar);
-        }
         c.appendChild(b); L.appendChild(c);
       });
     }).catch(function (x) { $('lista').textContent = x.message; });
@@ -598,7 +530,7 @@ a{color:var(--acc)}
       v('epd').split('\n').filter(Boolean).map(function (l) { return '- ' + l; }).join('\n') +
       (v('eho') ? '\nHorário: ' + v('eho') : '') + (v('elo') ? '\nContactos e localização: ' + v('elo') : '') +
       (v('epo') ? '\nGarantia, entrega e pagamento: ' + v('epo') : '') + (v('eex') ? '\nRegras extra: ' + v('eex') : '');
-    api('POST', '/api/empresas', { nome: v('en'), system_prompt: pr, humano_ativo: $('eh').checked, plano: $('ep').value }).then(function (j) {
+    api('POST', '/api/empresas', { nome: v('en'), system_prompt: pr, humano_ativo: $('eh').checked }).then(function (j) {
       var p = LOGO_NOVO ? api('PUT', '/api/empresas/' + j.id + '/logo', { logo: LOGO_NOVO }).catch(function () {}) : Promise.resolve();
       return p.then(function () { return j; });
     }).then(function (j) {
@@ -811,7 +743,7 @@ ASSETS["minha.html"] = ("text/html; charset=utf-8", r'''<!DOCTYPE html>
 <form id="fl" class="row"><input id="k" type="password" autocomplete="current-password" aria-label="Chave da empresa" required><button class="btn" type="submit">Entrar</button></form>
 <p id="ml" class="msg"></p></section>
 <div id="portal" hidden>
-<section class="card"><h2 id="nm"></h2><div id="st"></div><p id="vd" class="msg"></p><p id="pc" class="msg"></p><p id="lk" class="msg"></p><div id="sm" class="msg"></div></section>
+<section class="card"><h2 id="nm"></h2><div id="st"></div><p id="vd" class="msg"></p><p id="lk" class="msg"></p><div id="sm" class="msg"></div></section>
 <section class="card" id="m-logo"><div class="sh"><span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 17l-5-5-9 8"/></svg></span><div><h2>Logótipo</h2><p class="desc">A imagem da sua marca aparece no topo do chat e na lista de empresas, ao lado do nome.</p></div></div>
 <div class="lgf"><div class="av" id="lgv"></div><input id="lgi" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Escolher logótipo"></div>
 <div class="row"><button class="btn" id="lgs" type="button" disabled>Guardar logótipo</button><button class="btn alt" id="lgr" type="button" hidden>Remover</button></div><p id="lgm" class="msg"></p></section>
@@ -842,8 +774,6 @@ ASSETS["minha.js"] = ("application/javascript; charset=utf-8", r'''(function () 
     return api('GET', '/api/minha/resumo').then(function (r) {
       mostrar(true);
       $('nm').textContent = r.nome; mostrarLogo(r);
-      if (r.pacote && r.pacote.nome) { $('pc').textContent = 'Pacote ' + r.pacote.nome + ': ' + r.pacote.usado + (r.pacote.limite ? ' de ' + r.pacote.limite : '') + ' mensagens de clientes este mês.'
-        + (r.pacote.estado_limite === 'perto' ? ' Está perto do limite.' : '') + (r.pacote.estado_limite === 'atingido' ? ' Limite atingido: o assistente deixa de responder até ao próximo mês.' : ''); }
       var st = $('st'); st.textContent = ''; st.appendChild(h('span', 'badge' + (r.ativa ? '' : ' off'), ROT[r.estado] || r.estado));
       $('vd').textContent = r.valido_ate ? 'Válida até ' + new Date(r.valido_ate).toLocaleDateString('pt-PT') : '';
       var lk = $('lk'); lk.textContent = '';
