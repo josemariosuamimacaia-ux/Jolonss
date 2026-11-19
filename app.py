@@ -45,6 +45,11 @@ app = Flask(__name__, static_folder=None)   # os ficheiros do site vêm de asset
 def google_site_verification():
     # Verificação de propriedade do site no Google Search Console
     return Response("google-site-verification: google4a5cd989738543d6.html", mimetype="text/plain")
+
+@app.get("/robots.txt")
+def robots_txt():
+    # Permite que motores de pesquisa rastreiem as páginas públicas do site.
+    return Response("User-agent: *\nAllow: /\n", mimetype="text/plain")
 if cfg.trust_proxy:   # atrás de um proxy, lê o IP real do visitante
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
@@ -499,6 +504,8 @@ def ficheiro_estatico(nome):
 @app.before_request
 def verificar_configuracao():
     """Se faltar configuração, em vez de um erro mudo mostra o que falta (só /saude responde normalmente)."""
+    if request.path in ("/robots.txt", "/google4a5cd989738543d6.html"):
+        return None
     if cfg.problemas and request.path not in ("/saude", "/health"):
         itens = "".join(f"<li>{p}</li>" for p in cfg.problemas)
         return (f"<!DOCTYPE html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
