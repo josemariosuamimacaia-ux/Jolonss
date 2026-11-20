@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 
 from models import Base, Empresa, SessionLocal, agora, engine
+import planos
 from segredos import nova_chave_acesso
 
 log = logging.getLogger("mactech.publico")
@@ -112,13 +113,20 @@ svg{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-l
 .lgf{display:flex;align-items:center;gap:14px;margin-top:6px}.lgf canvas{width:64px;height:64px;border-radius:14px;border:1px dashed var(--line);background:var(--bg);flex:none}
 .lgf input{padding:8px}
 .nota{font-size:13px;color:var(--mut);margin:4px 0 0}
+.pacs{display:grid;gap:10px;margin-top:8px}
+.pac{display:grid;grid-template-columns:24px 1fr;gap:2px 10px;align-items:start;border:1.5px solid var(--line);border-radius:14px;padding:12px 14px;cursor:pointer;margin:0;font-weight:400;font-size:16px;background:var(--card)}
+.pac input{width:auto;margin:3px 0 0;padding:0;border:0;background:none;grid-row:span 2;accent-color:var(--goldd)}
+.pac.sel{border-color:var(--goldd);background:var(--tint)}
+.pac input:focus{box-shadow:none}
+.pac-t{display:flex;justify-content:space-between;gap:4px 12px;flex-wrap:wrap}.pac-t b{font-size:16.5px}.pac-t span{color:var(--goldd);font-weight:700}
+.pac small{grid-column:2;color:var(--mut);font-size:13.5px;line-height:1.4}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style><link rel="icon" href="/static/logo.svg">"""
 
 TOPO = """<header class="topo"><div><a href="/"><img class="lg" src="/static/logo.svg" alt="" width="40" height="40"><b>Mac<span>Tech</span></b></a><small>Atendimento com IA</small></div></header>"""
 
 INICIO = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1b33"><title>MacTech</title>""" + BASE_CSS + """</head><body>""" + TOPO + """<main>
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1b33"><title>MacTech</title><meta name="description" content="Assistentes de atendimento com inteligência artificial para empresas em Angola. Responda aos clientes no chat e no WhatsApp, a qualquer hora.">""" + BASE_CSS + """</head><body>""" + TOPO + """<main>
 <div class="marca"><img class="lg" src="/static/logo.svg" alt="MacTech" width="116" height="116"><h1>Mac<span>Tech</span></h1>
 <p>Assistentes de atendimento com IA para empresas.</p></div>
 <a class="op" href="/clientes"><span class="ic">""" + ICONES["cliente"] + """</span><b>Sou cliente</b><small>Escolha uma empresa e tire as suas dúvidas com o assistente, a qualquer hora.</small><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></a>
@@ -129,7 +137,7 @@ INICIO = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 </main></body></html>"""
 
 CLIENTES = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1b33"><title>MacTech · Empresas</title>""" + BASE_CSS + """</head><body>""" + TOPO + """<main>
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1b33"><title>MacTech · Empresas</title><meta name="description" content="Escolha uma empresa e tire as suas dúvidas com o assistente virtual, a qualquer hora.">""" + BASE_CSS + """</head><body>""" + TOPO + """<main>
 <a class="voltar" href="/">&larr; Início</a>
 <h1>Escolha a empresa</h1>
 <p>Toque na empresa com quem quer falar. O assistente responde de imediato e, se precisar, passa a conversa a uma pessoa.</p>
@@ -161,13 +169,16 @@ document.getElementById('q').oninput = mostrar;
 </script></main></body></html>"""
 
 EMPRESAS = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1b33"><title>MacTech · Registar empresa</title>""" + BASE_CSS + """</head><body>""" + TOPO + """<main>
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1b33"><title>MacTech · Registar empresa</title><meta name="description" content="Registe a sua empresa e tenha um assistente de atendimento com IA, com o seu nome e o seu logótipo.">""" + BASE_CSS + """</head><body>""" + TOPO + """<main>
 <a class="voltar" href="/">&larr; Início</a>
 <h1>Registar empresa</h1>
-<p>Em três passos o seu negócio fica com um assistente de atendimento com IA, com o seu nome e o seu logótipo.</p>
+<p>Em quatro passos o seu negócio fica com um assistente de atendimento com IA, com o seu nome e o seu logótipo.</p>
 <div class="card passo"><span class="n">1</span><b>Termos</b><p>Leia as condições do serviço antes de continuar.</p><details><summary>Ler os termos</summary><pre>{{ termos }}</pre></details></div>
-<div class="card passo"><span class="n">2</span><b>Pagamento inicial</b><p>Faça o pagamento e guarde a referência para o passo seguinte.</p><pre>{{ pagamento }}</pre></div>
-<form id="f" class="card passo"><span class="n">3</span><b>Dados da empresa</b><p>O assistente só usa estas informações para responder aos seus clientes.</p><div>
+<div class="card passo"><span class="n">2</span><b>Escolha o pacote</b><p>Cada pacote tem um preço por mês e um limite de mensagens de clientes.</p><div class="pacs" role="radiogroup" aria-label="Pacote">
+{% for k, p in pacotes %}<label class="pac"><input type="radio" name="pac" value="{{ k }}" data-preco="{{ p.preco }}"><span class="pac-t"><b>{{ p.nome }}</b><span>{{ p.preco }} Kz por mês</span></span><small>{{ p.resumo }}</small></label>
+{% endfor %}</div></div>
+<div class="card passo"><span class="n">3</span><b>Pagamento inicial</b><p>Faça o pagamento do pacote escolhido e guarde a referência para o passo seguinte.</p><p class="nota" id="valor">Escolha um pacote para ver o valor a pagar.</p><pre>{{ pagamento }}</pre></div>
+<form id="f" class="card passo"><span class="n">4</span><b>Dados da empresa</b><p>O assistente só usa estas informações para responder aos seus clientes.</p><div>
 <label for="n">Nome da empresa</label><input id="n" maxlength="120" required>
 <label for="lg">Logótipo (opcional)</label>
 <div class="lgf"><canvas id="lgp" width="64" height="64" aria-label="Pré-visualização do logótipo"></canvas><input id="lg" type="file" accept="image/png,image/jpeg,image/webp"></div>
@@ -188,6 +199,12 @@ EMPRESAS = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <script>
 var logo = null;
 function v(i) { return document.getElementById(i).value.trim(); }
+var pacs = document.querySelectorAll('input[name=pac]');
+function pacote() { var c = document.querySelector('input[name=pac]:checked'); return c ? c.value : ''; }
+for (var i = 0; i < pacs.length; i++) pacs[i].onchange = function () {
+  for (var j = 0; j < pacs.length; j++) pacs[j].parentNode.className = 'pac' + (pacs[j].checked ? ' sel' : '');
+  document.getElementById('valor').textContent = 'Valor a pagar (primeiro mês): ' + this.getAttribute('data-preco') + ' Kz';
+};
 document.getElementById('lg').onchange = function () {
   var m = document.getElementById('m'); m.className = 'msg'; m.textContent = '';
   MTLogo.ler(this.files[0]).then(function (r) {
@@ -196,10 +213,12 @@ document.getElementById('lg').onchange = function () {
 };
 document.getElementById('f').onsubmit = function (ev) {
   ev.preventDefault();
-  var m = document.getElementById('m'); m.className = 'msg'; m.textContent = 'A enviar...';
+  var m = document.getElementById('m'); m.className = 'msg';
+  if (!pacote()) { m.className = 'msg erro'; m.textContent = 'Escolha um pacote no passo 2.'; return; }
+  m.textContent = 'A enviar...';
   fetch('/api/publico/registar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
     nome: v('n'), sector: v('s'), descricao: v('d'), produtos: v('p'), horario: v('h'), local: v('l'), politicas: v('g'),
-    contacto: v('c'), ref_pagamento: v('r'), aceita_termos: document.getElementById('t').checked, website: v('w'), logo: logo }) })
+    contacto: v('c'), ref_pagamento: v('r'), plano: pacote(), aceita_termos: document.getElementById('t').checked, website: v('w'), logo: logo }) })
     .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
     .then(function (x) {
       if (x.ok) { m.className = 'msg ok'; m.textContent = 'Pedido enviado. GUARDE esta chave (não volta a ser mostrada): ' + (x.j.chave || '') + ' . Serve para entrar em Minha empresa e ver o estado. Quando o pagamento for confirmado, a empresa fica disponível aos clientes.'; document.getElementById('f').reset(); logo = null; MTLogo.desenhar(document.getElementById('lgp'), null); }
@@ -279,7 +298,7 @@ def registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug, exige
     def pagina_empresas():
         pagamento = os.environ.get("PAGAMENTO_INSTRUCOES", "").strip() or (
             "Os dados de pagamento serão indicados pela MacTech. Contacte-nos para os receber.")
-        return render_template_string(EMPRESAS, termos=TERMOS, pagamento=pagamento)
+        return render_template_string(EMPRESAS, termos=TERMOS, pagamento=pagamento, pacotes=planos.lista_publica())
 
     @app.get("/api/publico/empresas")
     def listar_publico():
@@ -326,6 +345,9 @@ def registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug, exige
             return jsonify(erro="Preencha: " + ", ".join(em_falta) + "."), 400
         if d.get("aceita_termos") is not True:
             return jsonify(erro="Tem de aceitar os termos."), 400
+        plano = planos.plano_valido(d.get("plano"))
+        if not plano:
+            return jsonify(erro="Escolha um pacote."), 400
         logo = None
         if d.get("logo"):
             logo = _ler_logo(d.get("logo"))
@@ -340,6 +362,7 @@ def registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug, exige
             try:
                 db.flush()
                 db.add(PedidoEmpresa(empresa_id=empresa.id, contacto=contacto, ref_pagamento=ref))
+                planos.definir_plano(db, empresa.id, plano)
                 if logo:
                     _guardar_logo(db, empresa.id, logo)
                 db.commit()

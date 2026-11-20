@@ -31,3 +31,8 @@ O backup em /api/backup inclui `planos_empresa` e `uso_ia`.
 
 ## Testes
 `python testes_offline.py` deve acabar com TODOS OS TESTES PASSARAM antes de cada atualização.
+
+## Google (Search Console)
+- `/robots.txt`, `/sitemap.xml` e `/google4a5cd989738543d6.html` respondem sempre, mesmo quando a base de dados está a acordar. Antes, nessa altura o site devolvia erro 503 e a Google lia isso como "bloqueado".
+- Páginas públicas (`/`, `/clientes`, `/empresas`) também respondem sem a base de dados. As áreas privadas (`/painel`, `/agente`, `/minha-empresa`, `/api/`) ficam fora do Google.
+- Depois de publicar: abre `/robots.txt` no navegador (deve aparecer texto), e na Search Console usa «Testar URL publicado» e «Solicitar indexação». A Google pode demorar dias.
