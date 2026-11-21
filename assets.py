@@ -245,6 +245,73 @@ document.getElementById('f').onsubmit = function (e) { e.preventDefault(); var t
 };
 ''',
     ),
+    "prova.js": (
+        "application/javascript; charset=utf-8",
+        r'''window.MTProva = {
+  ler: function (file) {
+    return new Promise(function (ok, no) {
+      if (!file) { no(new Error('Escolha o comprovativo.')); return; }
+      var tipo = file.type;
+      if (tipo === 'application/pdf') {
+        if (file.size > 900 * 1024) { no(new Error('O PDF é grande demais (máximo 900 KB). Envie uma captura de ecrã.')); return; }
+        var fr = new FileReader();
+        fr.onload = function () { ok({ url: String(fr.result), nome: file.name, tipo: tipo, canvas: null }); };
+        fr.onerror = function () { no(new Error('Não foi possível ler o ficheiro.')); };
+        fr.readAsDataURL(file); return;
+      }
+      if (!/^image\/(png|jpeg|webp)$/.test(tipo)) { no(new Error('Use uma foto ou captura de ecrã (PNG, JPG ou WebP) ou um PDF.')); return; }
+      if (file.size > 15 * 1048576) { no(new Error('Imagem demasiado grande.')); return; }
+      function fim(origem, w, h) {
+        var tentativas = [[1400, 0.82], [1000, 0.7], [700, 0.6]];
+        for (var i = 0; i < tentativas.length; i++) {
+          var k = Math.min(1, tentativas[i][0] / Math.max(w, h)), c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
+          var x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(origem, 0, 0, c.width, c.height);
+          var u = c.toDataURL('image/jpeg', tentativas[i][1]);
+          if (u.length <= 1300000) { ok({ url: u, nome: file.name, tipo: 'image/jpeg', canvas: c }); return; }
+        }
+        no(new Error('Imagem demasiado pesada. Tire uma captura de ecrã.'));
+      }
+      if (window.createImageBitmap) {
+        createImageBitmap(file).then(function (b) { fim(b, b.width, b.height); }, function () { no(new Error('Não foi possível ler a imagem.')); });
+      } else {
+        var im = new Image(), url = URL.createObjectURL(file);
+        im.onload = function () { fim(im, im.width, im.height); URL.revokeObjectURL(url); };
+        im.onerror = function () { no(new Error('Não foi possível ler a imagem.')); };
+        im.src = url;
+      }
+    });
+  },
+  pre: function (canvas, r) {
+    var x = canvas.getContext('2d'); x.clearRect(0, 0, canvas.width, canvas.height);
+    if (!r) return;
+    if (r.canvas) {
+      var k = Math.min(canvas.width / r.canvas.width, canvas.height / r.canvas.height), w = r.canvas.width * k, h = r.canvas.height * k;
+      x.drawImage(r.canvas, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+    } else {
+      x.fillStyle = '#b3261e'; x.fillRect(10, 10, canvas.width - 20, canvas.height - 20);
+      x.fillStyle = '#fff'; x.font = 'bold 16px sans-serif'; x.textAlign = 'center'; x.fillText('PDF', canvas.width / 2, canvas.height / 2 + 6);
+    }
+  },
+  ver: function (caixa, tipo, dados) {
+    caixa.textContent = '';
+    var bin = atob(dados), u8 = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    var blob = new Blob([u8], { type: tipo });
+    if (tipo === 'application/pdf') {
+      var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'comprovativo.pdf';
+      a.className = 'btn alt'; a.textContent = 'Descarregar o PDF'; caixa.appendChild(a);
+      return Promise.resolve();
+    }
+    return createImageBitmap(blob).then(function (b) {
+      var c = document.createElement('canvas'); c.width = b.width; c.height = b.height; c.getContext('2d').drawImage(b, 0, 0);
+      c.title = 'Toque para ampliar'; c.onclick = function () { c.className = c.className ? '' : 'grande'; };
+      caixa.appendChild(c);
+    });
+  }
+};
+''',
+    ),
     "painel.css": (
         "text/css; charset=utf-8",
         r''':root{--bg:#e4e9f2;--card:#fff;--ink:#0c1a2e;--mut:#55647f;--acc:#14396b;--accT:#fff;--line:#d5dce9;--off:#ffd9d4;--nav:#0b1b33;--gold:#d4ac52;--goldd:#9a7220;--tint:rgba(154,114,32,.11);--sh:0 1px 2px rgba(11,27,51,.06),0 8px 24px rgba(11,27,51,.07)}
@@ -289,7 +356,15 @@ input[type=checkbox]{width:auto}
 .badge{display:inline-block;border-radius:999px;padding:1px 10px;font-size:12px;font-weight:700;background:var(--acc);color:var(--accT)}
 .badge.off{background:var(--off);color:var(--ink)}
 a{color:var(--acc)}
-#painel.so-analise>section:not(#sec-analise),#painel.so-analise>.atalhos,#painel:not(.so-analise)>#sec-analise{display:none}
+#painel>#sec-analise,#painel>#sec-notificacoes{display:none}
+#painel.so-analise>#sec-analise,#painel.so-notif>#sec-notificacoes{display:block}
+#painel.so-analise>section:not(#sec-analise),#painel.so-notif>section:not(#sec-notificacoes),#painel.so-analise>.atalhos,#painel.so-notif>.atalhos{display:none}
+.abas .badge{margin-left:6px;background:#b3261e;color:#fff}
+.acoes{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+a.btn{display:inline-block;text-decoration:none;text-align:center}
+.prova-caixa{overflow:auto;border:1px solid var(--line);border-radius:12px;margin:8px 0;max-height:440px;background:var(--bg)}
+.prova-caixa canvas{width:100%;display:block;cursor:zoom-in}.prova-caixa canvas.grande{width:1400px;max-width:none;cursor:zoom-out}
+textarea.cobranca{min-height:170px;margin-top:8px}
 .abas{margin:0 0 12px}.abas .btn{flex:1}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.btn{transition:none}}
 ''',
@@ -313,8 +388,9 @@ a{color:var(--acc)}
 <div id="painel" hidden>
 <div class="titulo"><h1>Painel do dono</h1><p>Gira empresas, pagamentos e conversas num só lugar.</p></div>
 <nav class="atalhos" aria-label="Secções"><a href="#sec-registar">Registar</a><a href="#sec-empresas">Empresas</a><a href="#sec-humanos">À espera de pessoa</a><a href="#sec-tickets">Tickets</a><a href="#sec-conversas">Conversas</a><a href="#sec-exportar">Exportar</a></nav>
-<div class="row abas"><button class="btn" id="v-cad" type="button">Cadastrar empresas</button><button class="btn alt" id="v-ana" type="button">Análise</button></div>
+<div class="row abas"><button class="btn" id="v-cad" type="button">Cadastrar empresas</button><button class="btn alt" id="v-ana" type="button">Análise</button><button class="btn alt" id="v-not" type="button">Notificações<span class="badge" id="nbadge" hidden></span></button></div>
 <section class="card" id="sec-analise"><div class="sh"><span class="ic"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></span><div><h2>Análise do mês</h2><p class="desc">Quantas pessoas a IA atendeu em cada empresa, quanto custou e qual é o seu lucro.</p></div></div><div id="analise"><p class="msg">A carregar…</p></div></section>
+<section class="card" id="sec-notificacoes"><div class="sh"><span class="ic"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8M10 21a2 2 0 0 0 4 0"/></svg></span><div><h2>Notificações</h2><p class="desc">Comprovativos recebidos e prazos a acabar. Veja o comprovativo, confirme o pagamento ou prepare a cobrança.</p></div></div><div id="notif"><p class="msg">A carregar…</p></div></section>
 <section class="card" id="sec-registar"><div class="sh"><span class="ic"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span><div><h2>Registar empresa</h2><p class="desc">Crie uma empresa nova, defina o que o assistente sabe e, se quiser, envie o logótipo.</p></div></div>
 <details class="abre"><summary>Abrir formulário de registo</summary>
 <form id="fe">
@@ -367,6 +443,7 @@ a{color:var(--acc)}
 </div>
 </main>
 <script src="/static/logo.js"></script>
+<script src="/static/prova.js"></script>
 <script src="/static/painel.js"></script>
 </body></html>
 ''',
@@ -374,7 +451,7 @@ a{color:var(--acc)}
     "painel.js": (
         "application/javascript; charset=utf-8",
         r'''(function () {
-  var K = sessionStorage.getItem('mt_admin') || '', tm = null;
+  var K = sessionStorage.getItem('mt_admin') || '', tm = null, tn = null;
   function $(i) { return document.getElementById(i); }
   function h(t, c, x) { var e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; }
   function erro(x) { alert(x.message); }
@@ -398,7 +475,7 @@ a{color:var(--acc)}
       });
   }
   function mostrar(logado) { $('entrar').hidden = logado; $('painel').hidden = !logado; $('sair').hidden = !logado; }
-  function sair() { sessionStorage.removeItem('mt_admin'); K = ''; clearInterval(tm); mostrar(false); }
+  function sair() { sessionStorage.removeItem('mt_admin'); K = ''; clearInterval(tm); clearInterval(tn); mostrar(false); }
   // ---- Nível 4 ----
   function n4id() { return $('n4e').value; }
   function n4msg(x) { $('n4m').textContent = x; }
@@ -446,12 +523,85 @@ a{color:var(--acc)}
       PACOTES.forEach(function (p) { var o = h('option', null, p.nome + ' · ' + kz(p.preco_kz) + ' por mês'); o.value = p.chave; ep.appendChild(o); });
     }).catch(function () {}).then(carregarEmpresas);
   }
-  function vista(analise) {
-    $('painel').className = analise ? 'so-analise' : '';
-    $('v-cad').className = 'btn' + (analise ? ' alt' : ''); $('v-ana').className = 'btn' + (analise ? '' : ' alt');
-    if (analise) carregarAnalise();
+  function vista(modo) {
+    $('painel').className = modo === 'ana' ? 'so-analise' : modo === 'not' ? 'so-notif' : '';
+    $('v-cad').className = 'btn' + (modo === 'cad' ? '' : ' alt'); $('v-ana').className = 'btn' + (modo === 'ana' ? '' : ' alt'); $('v-not').className = 'btn' + (modo === 'not' ? '' : ' alt');
+    if (modo === 'ana') carregarAnalise();
+    if (modo === 'not') carregarNotificacoes();
   }
-  $('v-cad').onclick = function () { vista(false); }; $('v-ana').onclick = function () { vista(true); };
+  $('v-cad').onclick = function () { vista('cad'); }; $('v-ana').onclick = function () { vista('ana'); }; $('v-not').onclick = function () { vista('not'); };
+
+  // ---- Notificações: comprovativos e prazos ----
+  function marcarBadge(n) { var b = $('nbadge'); b.textContent = n; b.hidden = !n; }
+  function contarNotificacoes() { api('GET', '/api/notificacoes?resumo=1').then(function (j) { marcarBadge(j.total); }).catch(function () {}); }
+  function quando(iso) { return iso ? new Date(iso).toLocaleString('pt-PT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''; }
+  function recarregarTudo() { carregarNotificacoes(); carregarEmpresas(); }
+  function cartaoProva(p) {
+    var c = h('div', 'item'), t = h('div', 'cab-t');
+    t.appendChild(h('b', null, p.empresa + ' ')); t.appendChild(h('span', 'badge', p.origem === 'renovacao' ? 'Renovação' : 'Novo registo')); c.appendChild(t);
+    c.appendChild(h('p', 'msg', (p.plano_nome ? 'Pacote ' + p.plano_nome + ' · ' + kz(p.preco_kz) + ' · ' : '') + 'Contacto: ' + (p.contacto || 'sem contacto')
+      + (p.referencia ? ' · Ref.: ' + p.referencia : '') + ' · Enviado ' + quando(p.quando)));
+    var caixa = h('div', 'prova-caixa'); caixa.hidden = true; c.appendChild(caixa);
+    var ac = h('div', 'acoes'); c.appendChild(ac);
+    var ver = h('button', 'btn alt', 'Ver comprovativo'); ver.type = 'button';
+    ver.onclick = function () { api('GET', '/api/provas/' + p.id).then(function (j) { caixa.hidden = false; return MTProva.ver(caixa, j.tipo, j.dados); }).catch(erro); };
+    var ok = h('button', 'btn', 'Já pagou: ativar ' + p.dias + ' dias'); ok.type = 'button';
+    ok.onclick = function () {
+      if (!confirm('Confirma que viu o comprovativo e que o pagamento de ' + (p.preco_kz ? kz(p.preco_kz) : 'a empresa') + ' entrou? ' + p.empresa + ' fica ativa por ' + p.dias + ' dias.')) return;
+      api('POST', '/api/provas/' + p.id + '/aprovar', {}).then(recarregarTudo).catch(erro);
+    };
+    var no = h('button', 'btn alt', 'Recusar'); no.type = 'button';
+    no.onclick = function () {
+      var m = prompt('Motivo (a empresa vai ler):', 'Comprovativo ilegível. Envie outro, por favor.');
+      if (m === null) return;
+      api('POST', '/api/provas/' + p.id + '/recusar', { motivo: m }).then(recarregarTudo).catch(erro);
+    };
+    ac.appendChild(ver); ac.appendChild(ok); ac.appendChild(no);
+    return c;
+  }
+  function cartaoAviso(a) {
+    var c = h('div', 'item'), t = h('div', 'cab-t');
+    var rot = a.tipo === 'acaba' ? (a.dias <= 0 ? 'Acaba hoje' : 'Acaba em ' + a.dias + ' dia(s)') : a.tipo === 'terminou' ? 'Terminou há ' + a.dias + ' dia(s)' : 'Teste terminou';
+    t.appendChild(h('b', null, a.empresa + ' ')); t.appendChild(h('span', 'badge off', rot)); c.appendChild(t);
+    var u = a.consumo || {};
+    c.appendChild(h('p', 'msg', 'No período: ' + (u.pessoas || 0) + ' pessoas · ' + (u.mensagens || 0) + ' mensagens de clientes · ' + (u.respostas_ia || 0) + ' respostas da IA'
+      + (a.plano_nome ? ' · Pacote ' + a.plano_nome + ' (' + kz(a.preco_kz) + ')' : '')));
+    var saida = h('div'); c.appendChild(saida);
+    var ac = h('div', 'acoes'); c.appendChild(ac);
+    var co = h('button', 'btn', 'Preparar cobrança'); co.type = 'button';
+    co.onclick = function () {
+      api('GET', '/api/empresas/' + a.empresa_id + '/cobranca').then(function (j) {
+        saida.textContent = '';
+        var ta = h('textarea', 'cobranca'); ta.value = j.texto; ta.setAttribute('aria-label', 'Texto da cobrança'); saida.appendChild(ta);
+        var r = h('div', 'acoes'); saida.appendChild(r);
+        var cp = h('button', 'btn alt', 'Copiar texto'); cp.type = 'button';
+        cp.onclick = function () {
+          var feito = function () { cp.textContent = 'Copiado'; };
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(ta.value).then(feito, function () { ta.select(); document.execCommand('copy'); feito(); });
+          else { ta.select(); document.execCommand('copy'); feito(); }
+        };
+        r.appendChild(cp);
+        if (j.link_whatsapp) { var w = h('a', 'btn', 'Enviar por WhatsApp'); w.href = j.link_whatsapp; w.target = '_blank'; w.rel = 'noopener'; r.appendChild(w); }
+        else r.appendChild(h('p', 'msg', 'O contacto (' + (j.contacto || 'sem contacto') + ') não é um telemóvel: copie o texto e envie por email.'));
+      }).catch(erro);
+    };
+    ac.appendChild(co);
+    if (a.tipo !== 'acaba') {
+      var ar = h('button', 'btn alt', 'Arquivar'); ar.type = 'button';
+      ar.onclick = function () { if (confirm('Arquivar ' + a.empresa + '? O assistente fica desligado e os dados ficam guardados.')) api('POST', '/api/empresas/' + a.empresa_id + '/arquivar').then(recarregarTudo).catch(erro); };
+      ac.appendChild(ar);
+    }
+    return c;
+  }
+  function carregarNotificacoes() {
+    var N = $('notif');
+    api('GET', '/api/notificacoes').then(function (j) {
+      marcarBadge(j.total); N.textContent = '';
+      if (!j.total) { N.appendChild(h('p', 'msg', 'Sem notificações. Quando uma empresa enviar um comprovativo ou um prazo acabar, aparece aqui.')); return; }
+      j.provas.forEach(function (p) { N.appendChild(cartaoProva(p)); });
+      j.avisos.forEach(function (a) { N.appendChild(cartaoAviso(a)); });
+    }).catch(function (x) { N.textContent = x.message; });
+  }
   function carregarAnalise() {
     var A = $('analise');
     api('GET', '/api/analise').then(function (j) {
@@ -479,7 +629,7 @@ a{color:var(--acc)}
     }).catch(function (x) { A.textContent = x.message; });
   }
 
-  function iniciar() { mostrar(true); carregarTickets(); carregarPacotes(); carregarHumanos(); carregarConversas(); carregarSemResposta(); clearInterval(tm); tm = setInterval(function () { carregarHumanos(); carregarTickets(); }, 15000); }
+  function iniciar() { mostrar(true); contarNotificacoes(); clearInterval(tn); tn = setInterval(contarNotificacoes, 60000); carregarTickets(); carregarPacotes(); carregarHumanos(); carregarConversas(); carregarSemResposta(); clearInterval(tm); tm = setInterval(function () { carregarHumanos(); carregarTickets(); }, 15000); }
 
   $('fl').onsubmit = function (e) {
     e.preventDefault(); K = $('k').value.trim();
@@ -812,6 +962,12 @@ ASSETS["minha.html"] = ("text/html; charset=utf-8", r'''<!DOCTYPE html>
 <p id="ml" class="msg"></p></section>
 <div id="portal" hidden>
 <section class="card"><h2 id="nm"></h2><div id="st"></div><p id="vd" class="msg"></p><p id="pc" class="msg"></p><p id="lk" class="msg"></p><div id="sm" class="msg"></div></section>
+<section class="card" id="m-pagamento"><div class="sh"><span class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></svg></span><div><h2>Pagamento e renovação</h2><p class="desc">Pague por transferência e envie o comprovativo. Quando o dono o confirmar, o seu prazo é renovado.</p></div></div>
+<p id="pg-estado" class="msg"></p><pre id="pg-inst" class="msg"></pre>
+<label for="pg-arq">Comprovativo (foto, captura ou PDF)</label>
+<div class="lgf"><canvas id="pg-prev" width="64" height="64" aria-label="Pré-visualização do comprovativo"></canvas><input id="pg-arq" type="file" accept="image/png,image/jpeg,image/webp,application/pdf"></div>
+<label for="pg-ref">Número da transferência (opcional)</label><input id="pg-ref" maxlength="120">
+<div class="row"><button class="btn" id="pg-env" type="button" disabled>Enviar comprovativo</button></div><p id="pg-msg" class="msg"></p></section>
 <section class="card" id="m-logo"><div class="sh"><span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 17l-5-5-9 8"/></svg></span><div><h2>Logótipo</h2><p class="desc">A imagem da sua marca aparece no topo do chat e na lista de empresas, ao lado do nome.</p></div></div>
 <div class="lgf"><div class="av" id="lgv"></div><input id="lgi" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Escolher logótipo"></div>
 <div class="row"><button class="btn" id="lgs" type="button" disabled>Guardar logótipo</button><button class="btn alt" id="lgr" type="button" hidden>Remover</button></div><p id="lgm" class="msg"></p></section>
@@ -822,7 +978,7 @@ ASSETS["minha.html"] = ("text/html; charset=utf-8", r'''<!DOCTYPE html>
 <div class="row"><button class="btn" id="gv" type="button">Guardar</button></div><p id="mg" class="msg"></p></section>
 <section class="card" id="m-conversas"><div class="sh"><span class="ic"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg></span><div><h2>Conversas recentes</h2><p class="desc">As últimas conversas dos seus clientes. Toque numa para ler.</p></div></div><div id="cv"></div><div id="tr"></div></section>
 <section class="card" id="m-sem"><div class="sh"><span class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/></svg></span><div><h2>Perguntas que o assistente não soube responder</h2><p class="desc">Acrescente estas respostas à informação acima.</p></div></div><div id="sr"></div></section>
-</div></main><script src="/static/logo.js"></script><script src="/static/minha.js"></script></body></html>''')
+</div></main><script src="/static/logo.js"></script><script src="/static/prova.js"></script><script src="/static/minha.js"></script></body></html>''')
 
 ASSETS["minha.js"] = ("application/javascript; charset=utf-8", r'''(function () {
   var K = sessionStorage.getItem('mt_empresa') || '', preenchido = false;
@@ -841,7 +997,7 @@ ASSETS["minha.js"] = ("application/javascript; charset=utf-8", r'''(function () 
   function carregar() {
     return api('GET', '/api/minha/resumo').then(function (r) {
       mostrar(true);
-      $('nm').textContent = r.nome; mostrarLogo(r);
+      $('nm').textContent = r.nome; mostrarLogo(r); mostrarPagamento(r);
       if (r.pacote && r.pacote.nome) { $('pc').textContent = 'Pacote ' + r.pacote.nome + ': ' + r.pacote.usado + (r.pacote.limite ? ' de ' + r.pacote.limite : '') + ' mensagens de clientes este mês.'
         + (r.pacote.estado_limite === 'perto' ? ' Está perto do limite.' : '') + (r.pacote.estado_limite === 'atingido' ? ' Limite atingido: o assistente deixa de responder até ao próximo mês.' : ''); }
       var st = $('st'); st.textContent = ''; st.appendChild(h('span', 'badge' + (r.ativa ? '' : ' off'), ROT[r.estado] || r.estado));
@@ -867,6 +1023,26 @@ ASSETS["minha.js"] = ("application/javascript; charset=utf-8", r'''(function () 
       r.sem_resposta.forEach(function (p) { S.appendChild(h('div', 'item', p.pergunta)); });
     });
   }
+  var PROVA = null, PROVA_ROT = { pendente: 'Comprovativo enviado: à espera de confirmação.', aprovada: 'Último pagamento confirmado.', recusada: 'Comprovativo recusado' };
+  function kzf(n) { return Math.round(n || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' Kz'; }
+  function mostrarPagamento(r) {
+    var p = r.pagamento; if (!p) return;
+    $('pg-inst').textContent = p.instrucoes;
+    var u = p.ultima, t = p.pacote ? 'Pacote ' + p.pacote + ': ' + kzf(p.preco_kz) + ' por ' + p.dias + ' dias.' : 'Sem pacote definido.';
+    if (u) t += ' ' + (PROVA_ROT[u.estado] || u.estado) + (u.estado === 'recusada' && u.motivo ? ': ' + u.motivo : '') + (u.quando ? ' (' + new Date(u.quando).toLocaleDateString('pt-PT') + ')' : '');
+    $('pg-estado').textContent = t;
+  }
+  $('pg-arq').onchange = function () {
+    MTProva.ler(this.files[0]).then(function (x) { PROVA = x.url; MTProva.pre($('pg-prev'), x); $('pg-env').disabled = false; $('pg-msg').textContent = ''; })
+      .catch(function (x) { PROVA = null; MTProva.pre($('pg-prev'), null); $('pg-env').disabled = true; $('pg-msg').textContent = x.message; });
+  };
+  $('pg-env').onclick = function () {
+    $('pg-env').disabled = true;
+    api('POST', '/api/minha/prova', { prova: PROVA, referencia: $('pg-ref').value.trim() }).then(function () {
+      PROVA = null; $('pg-arq').value = ''; $('pg-ref').value = ''; MTProva.pre($('pg-prev'), null);
+      $('pg-msg').textContent = 'Comprovativo enviado. O dono vai vê-lo e confirmar.'; return carregar();
+    }).catch(function (x) { $('pg-msg').textContent = x.message; $('pg-env').disabled = false; });
+  };
   var novo = null;
   function mostrarLogo(r) {
     if (novo) return;

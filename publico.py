@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 
 from models import Base, Empresa, SessionLocal, agora, engine
+import pagamentos
 import planos
 from segredos import nova_chave_acesso
 
@@ -177,7 +178,7 @@ EMPRESAS = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <div class="card passo"><span class="n">2</span><b>Escolha o pacote</b><p>Cada pacote tem um preço por mês e um limite de mensagens de clientes.</p><div class="pacs" role="radiogroup" aria-label="Pacote">
 {% for k, p in pacotes %}<label class="pac"><input type="radio" name="pac" value="{{ k }}" data-preco="{{ p.preco }}"><span class="pac-t"><b>{{ p.nome }}</b><span>{{ p.preco }} Kz por mês</span></span><small>{{ p.resumo }}</small></label>
 {% endfor %}</div></div>
-<div class="card passo"><span class="n">3</span><b>Pagamento inicial</b><p>Faça o pagamento do pacote escolhido e guarde a referência para o passo seguinte.</p><p class="nota" id="valor">Escolha um pacote para ver o valor a pagar.</p><pre>{{ pagamento }}</pre></div>
+<div class="card passo"><span class="n">3</span><b>Pagamento inicial</b><p>Faça o pagamento do pacote escolhido e guarde o comprovativo (foto, captura ou PDF) para o passo seguinte.</p><p class="nota" id="valor">Escolha um pacote para ver o valor a pagar.</p><pre>{{ pagamento }}</pre></div>
 <form id="f" class="card passo"><span class="n">4</span><b>Dados da empresa</b><p>O assistente só usa estas informações para responder aos seus clientes.</p><div>
 <label for="n">Nome da empresa</label><input id="n" maxlength="120" required>
 <label for="lg">Logótipo (opcional)</label>
@@ -190,14 +191,17 @@ EMPRESAS = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <label for="l">Contactos e localização</label><input id="l" maxlength="300">
 <label for="g">Garantia, entrega e pagamento</label><textarea id="g" rows="2" maxlength="1000"></textarea>
 <label for="c">O seu telefone ou email (só a MacTech vê)</label><input id="c" maxlength="120" required>
-<label for="r">Referência ou comprovativo do pagamento (número da transferência)</label><input id="r" maxlength="120" required>
+<label for="pv">Comprovativo do pagamento (foto, captura ou PDF)</label>
+<div class="lgf"><canvas id="pvp" width="64" height="64" aria-label="Pré-visualização do comprovativo"></canvas><input id="pv" type="file" accept="image/png,image/jpeg,image/webp,application/pdf" required></div>
+<p class="nota">Pague primeiro e envie aqui o comprovativo. Só ativamos a empresa depois de o vermos.</p>
+<label for="r">Número da transferência (opcional)</label><input id="r" maxlength="120">
 <input class="h" id="w" tabindex="-1" autocomplete="off" aria-hidden="true">
 <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="t" style="width:auto"> Li e aceito os termos</label>
 <button class="btn" type="submit">Enviar pedido</button>
 <p id="m" class="msg"></p></div></form>
-<script src="/static/logo.js"></script>
+<script src="/static/logo.js"></script><script src="/static/prova.js"></script>
 <script>
-var logo = null;
+var logo = null, prova = null;
 function v(i) { return document.getElementById(i).value.trim(); }
 var pacs = document.querySelectorAll('input[name=pac]');
 function pacote() { var c = document.querySelector('input[name=pac]:checked'); return c ? c.value : ''; }
@@ -211,17 +215,23 @@ document.getElementById('lg').onchange = function () {
     logo = r.url; var c = document.getElementById('lgp'); MTLogo.desenhar(c, r.canvas);
   }).catch(function (x) { logo = null; m.className = 'msg erro'; m.textContent = x.message; });
 };
+document.getElementById('pv').onchange = function () {
+  var m = document.getElementById('m'); m.className = 'msg'; m.textContent = '';
+  MTProva.ler(this.files[0]).then(function (r) { prova = r.url; MTProva.pre(document.getElementById('pvp'), r); })
+    .catch(function (x) { prova = null; MTProva.pre(document.getElementById('pvp'), null); m.className = 'msg erro'; m.textContent = x.message; });
+};
 document.getElementById('f').onsubmit = function (ev) {
   ev.preventDefault();
   var m = document.getElementById('m'); m.className = 'msg';
   if (!pacote()) { m.className = 'msg erro'; m.textContent = 'Escolha um pacote no passo 2.'; return; }
+  if (!prova) { m.className = 'msg erro'; m.textContent = 'Envie o comprovativo do pagamento.'; return; }
   m.textContent = 'A enviar...';
   fetch('/api/publico/registar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
     nome: v('n'), sector: v('s'), descricao: v('d'), produtos: v('p'), horario: v('h'), local: v('l'), politicas: v('g'),
-    contacto: v('c'), ref_pagamento: v('r'), plano: pacote(), aceita_termos: document.getElementById('t').checked, website: v('w'), logo: logo }) })
+    contacto: v('c'), ref_pagamento: v('r'), prova: prova, plano: pacote(), aceita_termos: document.getElementById('t').checked, website: v('w'), logo: logo }) })
     .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
     .then(function (x) {
-      if (x.ok) { m.className = 'msg ok'; m.textContent = 'Pedido enviado. GUARDE esta chave (não volta a ser mostrada): ' + (x.j.chave || '') + ' . Serve para entrar em Minha empresa e ver o estado. Quando o pagamento for confirmado, a empresa fica disponível aos clientes.'; document.getElementById('f').reset(); logo = null; MTLogo.desenhar(document.getElementById('lgp'), null); }
+      if (x.ok) { m.className = 'msg ok'; m.textContent = 'Pedido enviado. GUARDE esta chave (não volta a ser mostrada): ' + (x.j.chave || '') + ' . Serve para entrar em Minha empresa e ver o estado. Quando o dono confirmar o comprovativo, a empresa fica disponível aos clientes.'; document.getElementById('f').reset(); logo = null; prova = null; MTLogo.desenhar(document.getElementById('lgp'), null); MTProva.pre(document.getElementById('pvp'), null); }
       else { m.className = 'msg erro'; m.textContent = x.j.erro || 'Não foi possível enviar.'; }
     }).catch(function () { m.className = 'msg erro'; m.textContent = 'Sem ligação. Tente de novo.'; });
 };
@@ -340,7 +350,7 @@ def registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug, exige
              "politicas": t("politicas", 1000)}
         contacto, ref = t("contacto", 120), t("ref_pagamento", 120)
         em_falta = [n for n, v in (("nome da empresa", f["nome"]), ("produtos ou serviços", f["produtos"]),
-                                   ("telefone ou email", contacto), ("referência do pagamento", ref)) if not v]
+                                   ("telefone ou email", contacto)) if not v]
         if em_falta:
             return jsonify(erro="Preencha: " + ", ".join(em_falta) + "."), 400
         if d.get("aceita_termos") is not True:
@@ -348,6 +358,9 @@ def registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug, exige
         plano = planos.plano_valido(d.get("plano"))
         if not plano:
             return jsonify(erro="Escolha um pacote."), 400
+        prova = pagamentos.ler_prova(d.get("prova"))
+        if not prova:
+            return jsonify(erro="Envie o comprovativo do pagamento (foto, captura de ecrã ou PDF até 900 KB)."), 400
         logo = None
         if d.get("logo"):
             logo = _ler_logo(d.get("logo"))
@@ -361,7 +374,8 @@ def registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug, exige
             db.add(empresa)
             try:
                 db.flush()
-                db.add(PedidoEmpresa(empresa_id=empresa.id, contacto=contacto, ref_pagamento=ref))
+                db.add(PedidoEmpresa(empresa_id=empresa.id, contacto=contacto, ref_pagamento=ref or "ver comprovativo"))
+                pagamentos.guardar_prova(db, empresa.id, prova, "registo", ref)
                 planos.definir_plano(db, empresa.id, plano)
                 if logo:
                     _guardar_logo(db, empresa.id, logo)
@@ -370,7 +384,7 @@ def registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug, exige
                 db.rollback()
                 log.exception("Não foi possível registar a empresa")
                 return jsonify(erro="Não foi possível registar. Tente de novo."), 409
-        log.warning("[ATENÇÃO] Novo pedido de empresa: %s (confirmar pagamento no painel)", f["nome"])
+        log.warning("[ATENÇÃO] Novo pedido de empresa: %s (ver o comprovativo em Notificações no painel)", f["nome"])
         return jsonify(ok=True, chave=chave), 201
 
     @app.get("/api/pedidos")

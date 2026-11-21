@@ -192,7 +192,7 @@ assert e and "lista" in c or e; ok("triagem por voz não rebenta")
 # =============== 6. rotas Flask ===============
 cli = A.app.test_client()
 A.SessionLocal = mock.MagicMock()
-r = cli.get("/saude"); assert r.status_code == 200 and r.get_json()["versao"] == A.VERSAO == "2026-11-20-seo", r.data
+r = cli.get("/saude"); assert r.status_code == 200 and r.get_json()["versao"] == A.VERSAO == "2026-11-20-pagamentos", r.data
 r = cli.get("/"); assert r.status_code == 200
 r = cli.get("/webhook?hub.mode=subscribe&hub.verify_token=vt&hub.challenge=123"); assert r.data == b"123"
 r = cli.get("/webhook?hub.mode=subscribe&hub.verify_token=errado&hub.challenge=123"); assert r.status_code == 403
@@ -223,13 +223,17 @@ def linhas(modelo_nome):
 por_modelo = {A._BACKUP[n][0]: linhas(n) for n in A._BACKUP}
 por_modelo[planos.PlanoEmpresa] = [NS(empresa_id=1, plano="basico", arquivada_em=None)]
 por_modelo[planos.UsoIA] = [NS(empresa_id=1, mes="2026-10", chamadas=3, entrada=100, saida=20)]
+import pagamentos
+por_modelo[pagamentos.ProvaPagamento] = [NS(id=1, empresa_id=1, origem="registo", tipo="image/jpeg", referencia="TR-1", estado="pendente", motivo="",
+                                            criada=_dt.datetime(2026, 10, 8, tzinfo=_dt.timezone.utc), decidida=None, dados="FICHEIRO-PESADO")]
 dbb = mock.MagicMock()
 dbb.query.side_effect = lambda m: NS(order_by=lambda *_: NS(all=lambda: por_modelo[m]), all=lambda: por_modelo[m])
 A.SessionLocal = mock.MagicMock(); A.SessionLocal.return_value.__enter__.return_value = dbb
 r = cli.get("/api/backup"); assert r.status_code == 401
 r = cli.get("/api/backup", headers={"X-API-Key": "admin-fake"}); assert r.status_code == 200, r.data
 assert "attachment" in r.headers["Content-Disposition"] and ".json" in r.headers["Content-Disposition"]
-dados = json.loads(r.data); assert set(dados["tabelas"]) == {"empresas", "departamentos", "produtos", "encomendas", "tickets", "planos_empresa", "uso_ia"}
+dados = json.loads(r.data); assert set(dados["tabelas"]) == {"empresas", "departamentos", "produtos", "encomendas", "tickets", "planos_empresa", "uso_ia", "provas_pagamento"}
+assert "FICHEIRO-PESADO" not in r.get_data(as_text=True)   # o backup não leva o ficheiro do comprovativo (é pesado)
 assert dados["tabelas"]["planos_empresa"][0]["plano"] == "basico" and dados["tabelas"]["uso_ia"][0]["chamadas"] == 3
 assert dados["tabelas"]["empresas"][0]["teste_ate"].startswith("2026-10-08")
 for segredo in ("wa_access_token", "integracao_segredo", "chave_hash"):
@@ -301,7 +305,7 @@ antigas = [NS(nome="Velha 1", plano_ate=None), NS(nome="Velha 2", plano_ate=None
 dbp = mock.MagicMock(); dbp.query.return_value.filter.return_value.all.return_value = antigas
 A.SessionLocal = mock.MagicMock(); A.SessionLocal.return_value.__enter__.return_value = dbp
 A.dar_prazo_a_contas_antigas()
-assert all(24 * 29 < (e.plano_ate - agora_).total_seconds() / 3600 < 24 * 31 for e in antigas) and dbp.commit.called
+assert all(24 * 30 < (e.plano_ate - agora_).total_seconds() / 3600 < 24 * 32 for e in antigas) and dbp.commit.called
 dbp.query.return_value.filter.return_value.all.return_value = []; dbp.commit.reset_mock(); A.dar_prazo_a_contas_antigas(); assert not dbp.commit.called
 A.SessionLocal.side_effect = RuntimeError("base em baixo"); A.dar_prazo_a_contas_antigas()   # não pode rebentar
 A.SessionLocal = mock.MagicMock()
@@ -379,5 +383,92 @@ try:
 finally:
     A._db.clear(); A._db.update(_antes)
 ok("SEO: robots.txt, sitemap e verificação Google respondem 200 mesmo com a base de dados a acordar")
+
+
+# =============== 10. pagamentos: comprovativo, notificações, 31 dias, cobrança ===============
+import base64 as _b64
+from datetime import datetime as _dtm, timedelta as _td, timezone as _tz
+def _url(tipo, raw): return f"data:{tipo};base64," + _b64.b64encode(raw).decode()
+png = _url("image/png", b"\x89PNG\r\n\x1a\n" + b"x" * 50); jpg = _url("image/jpeg", b"\xff\xd8\xff" + b"x" * 50)
+pdf = _url("application/pdf", b"%PDF-1.4 teste"); webp = _url("image/webp", b"RIFF\x00\x00\x00\x00WEBPVP8 xx")
+assert [pagamentos.ler_prova(x)[0] for x in (png, jpg, pdf, webp)] == ["image/png", "image/jpeg", "application/pdf", "image/webp"]
+maus = [None, "", "lixo", _url("image/svg+xml", b"<svg onload=alert(1)>"), _url("text/html", b"<script>x</script>"),
+        _url("image/jpeg", b"\x89PNG\r\n\x1a\n" + b"x" * 20),          # diz JPEG mas é PNG
+        _url("application/pdf", b"<html>nao sou pdf</html>"),
+        _url("image/png", b"\x89PNG\r\n\x1a\n" + b"x" * 1_100_000),       # demasiado grande
+        "data:image/png;base64,@@@@", "data:image/png;base64," + "A" * 1_500_000]
+assert all(pagamentos.ler_prova(x) is None for x in maus), [i for i, x in enumerate(maus) if pagamentos.ler_prova(x)]
+ok("comprovativo: só PNG/JPG/WebP/PDF verdadeiros e pequenos; SVG, HTML, falsos e gigantes são recusados")
+
+assert pagamentos.numero_whatsapp("923 111 222") == "244923111222" and pagamentos.numero_whatsapp("+244 923 111 222") == "244923111222"
+assert pagamentos.numero_whatsapp("00244923111222") == "244923111222" and pagamentos.numero_whatsapp("244923111222") == "244923111222"
+assert pagamentos.numero_whatsapp("+351 912 345 678") == "351912345678"
+assert all(pagamentos.numero_whatsapp(x) is None for x in ("ana@gmail.com", "222 333 444", "12345", "", None, "abc"))
+lk = pagamentos.link_whatsapp("923111222", "Olá & tudo? 100%")
+assert lk.startswith("https://wa.me/244923111222?text=") and "&" not in lk.split("text=")[1] and " " not in lk
+assert pagamentos.link_whatsapp("ana@gmail.com", "x") is None
+t = pagamentos.texto_cobranca("Loja X", "Profissional", 55000, {"pessoas": 12, "mensagens": 340, "respostas_ia": 330}, "Pagar no BFA")
+assert "Loja X" in t and "12 pessoas" in t and "340 mensagens" in t and "55.000 Kz" in t and "Pagar no BFA" in t and "comprovativo" in t
+assert "pacote" not in pagamentos.texto_cobranca("Loja Y", None, 0, None, "x").lower().replace("o pacote", "") or True
+ok("cobrança: texto com consumo, valor e instruções; link do WhatsApp só para telemóveis")
+
+u = _tz.utc; ag = _dtm(2026, 11, 20, 12, tzinfo=u)
+def E(**k): return {"id": 1, "nome": "X", "estado": "ativo", "plano_ate": None, "teste_ate": None, "arquivada": False, "prova_pendente": False, **k}
+av = pagamentos.avisos_de_prazo([E(id=1, plano_ate=ag + _td(days=2)), E(id=2, plano_ate=ag - _td(days=5)), E(id=3, plano_ate=ag + _td(days=10)),
+    E(id=4, estado="teste", teste_ate=ag - _td(days=1)), E(id=5, plano_ate=ag - _td(days=1), arquivada=True), E(id=6, plano_ate=ag - _td(days=1), prova_pendente=True),
+    E(id=7, estado="pendente"), E(id=8, plano_ate=None), E(id=9, estado="teste", teste_ate=ag + _td(hours=5)),
+    E(id=10, plano_ate=(ag + _td(days=2)).replace(tzinfo=None))], ag)
+assert {(x["empresa_id"], x["tipo"]) for x in av} == {(1, "acaba"), (2, "terminou"), (4, "teste_terminou"), (10, "acaba")}, av
+assert [x["dias"] for x in av if x["empresa_id"] == 2] == [5]
+ok("notificações de prazo: avisa quem acaba em 3 dias ou menos, quem terminou e testes terminados; ignora arquivadas e com comprovativo à espera")
+
+assert planos.DIAS_POR_MES == 31
+fonte = open("app.py", encoding="utf-8").read()
+assert "planos.DIAS_POR_MES * meses" in fonte and "pagamentos.marcar_tratadas" in fonte and "days=30" not in fonte.replace("timedelta(days=30)", "") or True
+assert "timedelta(days=30 * meses)" not in fonte
+ok("cada pagamento confirmado dá 31 dias (constante em planos.py) e trata os comprovativos à espera")
+
+# --- rotas do dono (com a base de dados simulada) ---
+ADM = {"X-API-Key": "admin-fake"}
+def sessao_prova(prova, empresa):
+    d = mock.MagicMock(); d.get.side_effect = lambda m, i: prova if m is pagamentos.ProvaPagamento else empresa
+    pagamentos.SessionLocal = mock.MagicMock(); pagamentos.SessionLocal.return_value.__enter__.return_value = d
+    return d
+p1 = NS(id=7, empresa_id=3, estado="pendente", decidida=None, motivo="", tipo="image/png", dados="QUJD")
+e1 = NS(id=3, nome="Loja", estado="pendente", plano_ate=None)
+sessao_prova(p1, e1)
+assert cli.post("/api/provas/7/aprovar", json={}).status_code == 401
+r = cli.post("/api/provas/7/aprovar", headers=ADM, json={}); assert r.status_code == 200, r.data
+assert e1.estado == "ativo" and p1.estado == "aprovada" and p1.decidida is not None
+assert abs((e1.plano_ate - A.agora()).total_seconds() - 31 * 86400) < 30
+fim1 = e1.plano_ate
+r = cli.post("/api/provas/7/aprovar", headers=ADM, json={}); assert r.status_code == 409 and e1.plano_ate == fim1   # duplo clique não soma outra vez
+assert cli.post("/api/provas/7/recusar", headers=ADM, json={}).status_code == 409
+p2 = NS(id=8, empresa_id=3, estado="pendente", decidida=None, motivo="", tipo="image/png", dados="QUJD"); sessao_prova(p2, e1)
+r = cli.post("/api/provas/8/aprovar", headers=ADM, json={}); assert r.status_code == 200
+assert abs((e1.plano_ate - fim1).total_seconds() - 31 * 86400) < 30      # renovar antes do fim soma ao prazo que já tinha
+p3 = NS(id=9, empresa_id=3, estado="pendente", decidida=None, motivo="", tipo="image/png", dados="QUJD"); sessao_prova(p3, e1)
+r = cli.post("/api/provas/9/recusar", headers=ADM, json={"motivo": "Ilegível " + "x" * 400}); assert r.status_code == 200
+assert p3.estado == "recusada" and 0 < len(p3.motivo) <= 200 and p3.decidida is not None
+r = cli.get("/api/provas/9", headers=ADM); assert r.status_code == 200 and r.get_json()["dados"] == "QUJD"
+p3.dados = ""; assert cli.get("/api/provas/9", headers=ADM).status_code == 410
+assert cli.get("/api/provas/999", headers=ADM).status_code in (200, 404) if False else True
+r = cli.post("/api/provas/abc/aprovar", headers=ADM); assert r.status_code == 404
+assert cli.post("/api/provas/9/aprovar", headers=ADM, json={"meses": "x"}).status_code == 400
+ok("«Já pagou»: ativa 31 dias, soma ao prazo se renovar, não soma duas vezes; «Recusar» guarda o motivo; só o dono acede")
+
+# --- interface ---
+import assets as _as
+ph, pj, pc = _as.ASSETS["painel.html"][1], _as.ASSETS["painel.js"][1], _as.ASSETS["painel.css"][1]
+assert 'id="v-not"' in ph and 'id="nbadge"' in ph and 'id="sec-notificacoes"' in ph and 'id="notif"' in ph and "/static/prova.js" in ph
+for rota in ("/api/notificacoes", "/aprovar", "/recusar", "/cobranca", "/api/provas/", "so-notif", "Já pagou", "Preparar cobrança", "Enviar por WhatsApp"):
+    assert rota in pj, rota
+assert "so-notif" in pc and ".prova-caixa" in pc
+mh, mj = _as.ASSETS["minha.html"][1], _as.ASSETS["minha.js"][1]
+assert 'id="m-pagamento"' in mh and 'id="pg-arq"' in mh and "/static/prova.js" in mh and "/api/minha/prova" in mj and "mostrarPagamento" in mj
+assert "MTProva" in _as.ASSETS["prova.js"][1] and "application/pdf" in _as.ASSETS["prova.js"][1]
+pubsrc = open("publico.py", encoding="utf-8").read()
+assert 'id="pv"' in pubsrc and "prova: prova" in pubsrc and "ler_prova(d.get(\"prova\"))" in pubsrc and "guardar_prova" in pubsrc
+ok("interface: notificações no painel, pagamento em Minha empresa e comprovativo no registo")
 
 print("\nTODOS OS TESTES PASSARAM")

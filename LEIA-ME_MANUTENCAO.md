@@ -36,3 +36,16 @@ O backup em /api/backup inclui `planos_empresa` e `uso_ia`.
 - `/robots.txt`, `/sitemap.xml` e `/google4a5cd989738543d6.html` respondem sempre, mesmo quando a base de dados está a acordar. Antes, nessa altura o site devolvia erro 503 e a Google lia isso como "bloqueado".
 - Páginas públicas (`/`, `/clientes`, `/empresas`) também respondem sem a base de dados. As áreas privadas (`/painel`, `/agente`, `/minha-empresa`, `/api/`) ficam fora do Google.
 - Depois de publicar: abre `/robots.txt` no navegador (deve aparecer texto), e na Search Console usa «Testar URL publicado» e «Solicitar indexação». A Google pode demorar dias.
+
+## Pagamentos por comprovativo (novo)
+Fluxo: a empresa paga por transferência e envia o comprovativo (foto, captura ou PDF até 900 KB) -> cai uma notificação no painel do dono -> o dono vê o comprovativo e carrega em «Já pagou» -> a empresa fica ativa **31 dias** (constante `DIAS_POR_MES` em `planos.py`).
+- **Registo:** o comprovativo é obrigatório; o número da transferência é opcional.
+- **Renovação:** em «Minha empresa» há o cartão «Pagamento e renovação» (como pagar, estado do último comprovativo e envio de um novo).
+- **Painel do dono, botão «Notificações»** (com o número de pendentes): mostra os comprovativos à espera (Ver comprovativo, Já pagou, Recusar com motivo) e as empresas cujo prazo acaba em 3 dias ou menos, ou já acabou, com o consumo do período, o texto de cobrança pronto a copiar e o botão «Enviar por WhatsApp» (só se o contacto for um telemóvel).
+- **Segurança:** só PNG, JPG, WebP e PDF verdadeiros e pequenos; carregar duas vezes em «Já pagou» não soma duas vezes; se ativares à mão em «Pagou: ativar/renovar», os comprovativos à espera ficam tratados.
+- **Espaço:** o ficheiro de cada comprovativo é apagado 90 dias depois de tratado (a linha com a data e o estado fica). O backup leva os dados dos comprovativos mas não os ficheiros.
+- **Instruções de pagamento:** a variável `PAGAMENTO_INSTRUCOES` no Render (aparece no registo e em «Minha empresa»).
+- Tabela nova (criada sozinha): `provas_pagamento`.
+
+## Google e o Render gratuito
+No plano gratuito do Render o serviço adormece após 15 minutos sem visitas e, enquanto dorme, o próprio Render responde ao `/robots.txt` com «proibido tudo», sem chegar ao código. Isso faz a Search Console mostrar «Bloqueada pelo ficheiro robots.txt». Para a Google conseguir ler: usa um plano pago do Render (o mais barato que não adormece) ou, no mínimo, abre o site antes de testar na Search Console.

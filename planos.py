@@ -37,6 +37,7 @@ CUSTO_IA_KZ_MIL_ENTRADA = 0.10      # Kz por cada 1000 tokens que a IA lê (esti
 CUSTO_IA_KZ_MIL_SAIDA = 0.40        # Kz por cada 1000 tokens que a IA escreve (estimativa)
 AVISO_PERCENTAGEM = 80              # avisa quando a empresa já gastou 80% do limite mensal
 HORAS_ATE_IA_RETOMAR = 6            # se uma pessoa assumiu a conversa e ninguém responde há tanto tempo, a IA volta a atender
+DIAS_POR_MES = 31                   # cada pagamento confirmado dá estes dias de uso (soma ao prazo se renovar antes do fim)
 
 
 class PlanoEmpresa(Base):

@@ -27,6 +27,7 @@ from werkzeug.exceptions import HTTPException
 import ferramentas
 import ia
 import nivel4
+import pagamentos
 import planos
 import publico
 import whatsapp
@@ -44,21 +45,21 @@ app = Flask(__name__, static_folder=None)   # os ficheiros do site vêm de asset
 if cfg.trust_proxy:   # atrás de um proxy, lê o IP real do visitante
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
-VERSAO = "2026-11-20-seo"   # mostra qual versão do código está mesmo ativa no Render
+VERSAO = "2026-11-20-pagamentos"   # mostra qual versão do código está mesmo ativa no Render
 _db = {"ok": False, "tentativa": 0.0, "erro": ""}
 
 
 def dar_prazo_a_contas_antigas():
-    """Contas 'ativo' antigas sem data de fim nunca eram cortadas. Ganham 30 dias a contar de hoje, uma só vez;
+    """Contas 'ativo' antigas sem data de fim nunca eram cortadas. Ganham um período (planos.DIAS_POR_MES dias) a contar de hoje, uma só vez;
     depois disso só continuam se o dono carregar em 'Pagou: ativar/renovar'."""
     try:
         with SessionLocal() as db:
             antigas = db.query(Empresa).filter(Empresa.estado == "ativo", Empresa.plano_ate.is_(None)).all()
             for e in antigas:
-                e.plano_ate = agora() + timedelta(days=30)
+                e.plano_ate = agora() + timedelta(days=planos.DIAS_POR_MES)
             if antigas:
                 db.commit()
-                log.warning("[ATENÇÃO] %s conta(s) ativa(s) sem data de fim ganharam 30 dias: %s", len(antigas), ", ".join(e.nome for e in antigas))
+                log.warning("[ATENÇÃO] %s conta(s) ativa(s) sem data de fim ganharam um período de prazo: %s", len(antigas), ", ".join(e.nome for e in antigas))
     except Exception:
         log.exception("Não foi possível dar prazo às contas antigas")
 
@@ -717,13 +718,14 @@ def mudar_estado(empresa_id):
         e.estado = estado
         if estado in ("ativo", "teste"):
             planos.desarquivar(db, empresa_id)
-        if estado == "ativo":   # cada pagamento confirmado soma 30 dias por mês (acumula se renovar antes do fim)
+        if estado == "ativo":   # cada pagamento confirmado soma planos.DIAS_POR_MES dias por mês (acumula se renovar antes do fim)
             try:
                 meses = max(1, min(int(d.get("meses", 1)), 12))
             except (TypeError, ValueError):
                 return jsonify(erro="meses tem de ser um número"), 400
             base = max(agora(), e.plano_ate if e.plano_ate and e.plano_ate > agora() else agora())
-            e.plano_ate = base + timedelta(days=30 * meses)
+            e.plano_ate = base + timedelta(days=planos.DIAS_POR_MES * meses)
+            pagamentos.marcar_tratadas(db, empresa_id)   # comprovativos à espera ficam tratados (não somar o prazo duas vezes)
         if estado == "teste":
             try:
                 dias = max(1, min(int(d.get("dias", 1)), 30))
@@ -1018,6 +1020,9 @@ def backup():
                                               for l in db.query(planos.PlanoEmpresa).all()]
         saida["tabelas"]["uso_ia"] = [{c: getattr(l, c) for c in ("empresa_id", "mes", "chamadas", "entrada", "saida")}
                                       for l in db.query(planos.UsoIA).all()]
+        saida["tabelas"]["provas_pagamento"] = [{**{c: getattr(l, c) for c in ("id", "empresa_id", "origem", "tipo", "referencia", "estado", "motivo")},
+                                                 "criada": _valor_json(l.criada), "decidida": _valor_json(l.decidida)}
+                                                for l in db.query(pagamentos.ProvaPagamento).all()]   # sem o ficheiro (pesado)
     return Response(json.dumps(saida, ensure_ascii=False, indent=1), mimetype="application/json",
                     headers={"Content-Disposition": f"attachment; filename=mactech_backup_{agora():%Y%m%d}.json"})
 
@@ -1209,7 +1214,7 @@ def minha_resumo():
         pacote = {"nome": planos.PLANOS[plano]["nome"] if plano in planos.PLANOS else None, "usado": usado,
                   "limite": planos.limite_de(plano), "estado_limite": planos.estado_do_limite(usado, planos.limite_de(plano))}
         return jsonify(
-            pacote=pacote, nome=e.nome, logo=publico.logo_versao(e.id) or None, estado=estado_de(e), ativa=empresa_ativa(e), system_prompt=e.system_prompt,
+            pacote=pacote, pagamento=pagamentos.resumo_empresa(db, e, plano), nome=e.nome, logo=publico.logo_versao(e.id) or None, estado=estado_de(e), ativa=empresa_ativa(e), system_prompt=e.system_prompt,
             humano_ativo=e.humano_ativo is not False, chat_url=f"/c/{e.slug}" if e.slug else None,
             valido_ate=iso_utc(e.plano_ate if estado_de(e) == "ativo" else e.teste_ate),
             semana={"pessoas": pessoas, "mensagens": contar(remetente="user"), "respostas_ia": contar(remetente="assistant"),
@@ -1429,6 +1434,7 @@ def cabecalhos(r):
 
 nivel4.registar(app, exige_admin, limite_excedido, iso_utc, enviar_humano, texto_valido)
 publico.registar(app, exige_admin, limite_excedido, empresa_ativa, gerar_slug, exige_empresa)
+pagamentos.registar(app, exige_admin, exige_empresa, limite_excedido, estado_de, empresa_ativa)
 
 if __name__ == "__main__":
     porta = int(os.environ.get("PORT", 3000))   # o Render define PORT
